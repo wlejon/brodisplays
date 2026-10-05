@@ -56,6 +56,9 @@ private:
 bool wait_for(const std::function<bool()>& pred, std::chrono::milliseconds timeout);
 
 std::string read_file(const std::string& path);
+// The last `lines` lines of a server's log, for the reason a server would not
+// start ("" when there is no log).
+std::string log_tail(const std::string& path, size_t lines = 8);
 bool write_file(const std::string& path, const std::string& content);
 
 // Sets up the environment of an isolated session for this process (and what

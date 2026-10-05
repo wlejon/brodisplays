@@ -39,7 +39,9 @@ int main() {
     REQUIRE(!dir.path().empty());
     bdtest::isolate_environment(dir);
     bdtest::Process xvfb = bdtest::start_xvfb(dir, 1280, 800);
-    if (!xvfb.running()) bstest::skip(name, "Xvfb is not installed or would not start");
+    if (!xvfb.running()) {
+        bstest::skip(name, "Xvfb is not installed or would not start:\n" + bdtest::log_tail(dir.path() + "/xvfb.log"));
+    }
 
     brodisplays::DisplayServiceConfig config;
     config.enable_events = true;

@@ -42,6 +42,9 @@ std::optional<brodisplays::DisplayMode> database_mode(const brodisplays::Display
             const auto& v = modes[p.targetInfo.modeInfoIdx].targetMode.targetVideoSignalInfo.vSyncFreq;
             if (v.Denominator) m.refresh_rate = double(v.Numerator) / double(v.Denominator);
         }
+        // 0 or 1 Hz is the "hardware default" marker, not a rate (Hyper-V's
+        // display stores 1/1): the database then records no rate to compare.
+        if (m.refresh_rate < 2.0) m.refresh_rate = bdtest::kAnyRate;
         if (m.width == 0) return std::nullopt;
         return m;
     }

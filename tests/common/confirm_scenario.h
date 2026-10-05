@@ -26,8 +26,14 @@ namespace bdtest {
 // login / reconnect; nullopt when it cannot be read.
 using PersistedModeReader = std::function<std::optional<brodisplays::DisplayMode>(const brodisplays::DisplayInfo&)>;
 
+// A persisted-mode reader returns this rate when the store records no rate
+// (it keeps "the display's default"): only the size is compared then.
+inline constexpr double kAnyRate = -1.0;
+
 inline bool same_mode(const brodisplays::DisplayMode& a, const brodisplays::DisplayMode& b) {
-    return a.width == b.width && a.height == b.height && std::abs(a.refresh_rate - b.refresh_rate) < 1.0;
+    const bool rate_ok = a.refresh_rate == kAnyRate || b.refresh_rate == kAnyRate ||
+                         std::abs(a.refresh_rate - b.refresh_rate) < 1.0;
+    return a.width == b.width && a.height == b.height && rate_ok;
 }
 
 inline void print_mode(const char* what, const std::optional<brodisplays::DisplayMode>& m) {

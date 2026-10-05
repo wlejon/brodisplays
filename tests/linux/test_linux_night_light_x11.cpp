@@ -77,7 +77,10 @@ int main() {
     REQUIRE(!dir.path().empty());
     bdtest::isolate_environment(dir);
     bdtest::Process xorg = bdtest::start_xorg_dummy(dir);
-    if (!xorg.running()) bstest::skip(name, "Xorg with the dummy video driver is not installed or would not start");
+    if (!xorg.running()) {
+        bstest::skip(name, "Xorg with the dummy video driver is not installed or would not start:\n" +
+                               bdtest::log_tail(dir.path() + "/xorg.out"));
+    }
 
     const Ramp original = read_ramp();
     REQUIRE(original.ok);

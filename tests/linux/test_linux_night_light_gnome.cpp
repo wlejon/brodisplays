@@ -54,7 +54,9 @@ int main() {
         dir, {"mutter", "--headless", "--wayland", "--no-x11", "--virtual-monitor", "1280x800",
               "--wayland-display", "wl-mutter"},
         "wl-mutter", "mutter.log");
-    if (!mutter.running()) bstest::skip(name, "mutter would not start headless");
+    if (!mutter.running()) {
+        bstest::skip(name, "mutter would not start headless:\n" + bdtest::log_tail(dir.path() + "/mutter.log"));
+    }
     REQUIRE(bdtest::wait_for([] { return !mutter_supported().empty(); }, std::chrono::milliseconds(10000)));
     bdtest::Process gsd_color({gsd}, dir.path() + "/gsd-color.log");
     REQUIRE(bdtest::wait_for(

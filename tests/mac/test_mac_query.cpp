@@ -69,6 +69,14 @@ int main() {
 
     std::string json = run_cmd("system_profiler -json SPDisplaysDataType 2>/dev/null");
     REQUIRE(!json.empty());
+    // A virtual machine's paravirtual GPU is listed without its displays:
+    // then there is no oracle, and only the checks that need none run. A
+    // listing that has displays must have ours.
+    const bool oracle = json.find("\"_spdisplays_displayID\"") != std::string::npos;
+    if (!oracle) {
+        std::printf("Note: system_profiler lists no displays here; no oracle for geometry and state:\n%s\n",
+                    json.substr(0, 600).c_str());
+    }
     for (const auto& d : snap.displays) {
         std::printf("Display %s '%s': %ux%u px @ %.2f Hz, %ux%u pt at %d,%d, scale %.2f, active %d, mirror_of '%s'\n",
                     d.id.c_str(), d.name.c_str(), d.current_mode.width, d.current_mode.height,
@@ -80,6 +88,7 @@ int main() {
         CHECK(d.current_mode.width > 0);
         CHECK(d.current_mode.height > 0);
         CHECK(!d.available_modes.empty());
+        if (!oracle) continue;
 
         std::string block = profiler_block(json, d.id);
         CHECK(!block.empty());

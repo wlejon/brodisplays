@@ -100,7 +100,10 @@ int main() {
     setenv("WLR_HEADLESS_OUTPUTS", "2", 1);
     setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
     bdtest::Process sway = bdtest::start_wayland(dir, {"sway", "-c", config}, "", "sway.log");
-    if (!sway.running()) bstest::skip(name, "sway is not installed or would not start headless");
+    if (!bdtest::have_program("sway")) bstest::skip(name, "sway is not installed");
+    if (!sway.running()) {
+        bstest::skip(name, "sway would not start headless:\n" + bdtest::log_tail(dir.path() + "/sway.log"));
+    }
 
     size_t outputs = 0;
     int usable = -1;

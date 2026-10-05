@@ -293,6 +293,22 @@ std::string read_file(const std::string& path) {
     return out;
 }
 
+std::string log_tail(const std::string& path, size_t lines) {
+    std::string log = read_file(path);
+    while (!log.empty() && (log.back() == '\n' || log.back() == '\r')) log.pop_back();
+    if (log.empty()) return "";
+    size_t at = log.size();
+    for (size_t n = 0; n < lines && at > 0; ++n) {
+        size_t nl = log.rfind('\n', at - 1);
+        if (nl == std::string::npos) {
+            at = 0;
+            break;
+        }
+        at = nl;
+    }
+    return log.substr(at == 0 ? 0 : at + 1);
+}
+
 bool write_file(const std::string& path, const std::string& content) {
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
