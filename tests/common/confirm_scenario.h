@@ -9,6 +9,7 @@
 // rewrites the persisted configuration (restoring it before it returns).
 
 #include "check.h"
+#include "common/mode_candidates.h"
 #include "brodisplays/display_service.h"
 
 #include <chrono>
@@ -60,32 +61,13 @@ inline int run_confirm_scenario(const char* name, const PersistedModeReader& rea
     print_mode("Persisted mode", stored_before);
     if (!stored_before) bstest::skip(name, "the persisted configuration of the primary display cannot be read");
 
-    const brodisplays::DisplayMode* alt = nullptr;
-    for (const auto& m : original.available_modes) {
-        if (m.width == orig.width && m.height == orig.height && std::abs(m.refresh_rate - orig.refresh_rate) > 5.0) {
-            alt = &m;
-            break;
-        }
-    }
-    for (const auto& m : original.available_modes) {
-        if (alt) break;
-        if ((m.width != orig.width || m.height != orig.height) && m.width >= 1024 && m.height >= 768) alt = &m;
-    }
-    if (!alt) bstest::skip(name, "the primary display offers no alternate mode");
-    const brodisplays::DisplayMode target = *alt;
-
-    auto change_to = [&](const brodisplays::DisplayMode& m) {
-        brodisplays::DisplayConfigChange c;
-        c.display_id = original.id;
-        c.width = m.width;
-        c.height = m.height;
-        c.refresh_rate = m.refresh_rate;
-        return c;
-    };
-
+    const auto candidates = alternate_modes(original);
+    if (candidates.empty()) bstest::skip(name, "the primary display offers no alternate mode");
+    std::string refusals;
+    const int picked = apply_first_accepted(*service, original.id, candidates, std::chrono::seconds(30), &refusals);
+    if (picked < 0) bstest::skip(name, "the platform refused every alternate mode: " + refusals);
+    const brodisplays::DisplayMode target = candidates[static_cast<size_t>(picked)];
     print_mode("Temporary mode", target);
-    auto applied = service->apply_temporary_configuration(change_to(target), std::chrono::seconds(30));
-    if (!applied.ok) bstest::skip(name, "the platform refused the mode change: " + applied.error);
 
     // Not persisted while it is only a test.
     auto during = read_persisted(original);
@@ -101,7 +83,7 @@ inline int run_confirm_scenario(const char* name, const PersistedModeReader& rea
     CHECK(saved);
 
     // Restore: the original mode, persisted again.
-    auto restore = service->apply_temporary_configuration(change_to(orig), std::chrono::seconds(30));
+    auto restore = service->apply_temporary_configuration(change_to(original.id, orig), std::chrono::seconds(30));
     if (!restore.ok) std::printf("restore apply: %s\n", restore.error.c_str());
     CHECK(restore.ok);
     auto restore_confirm = service->confirm_configuration();

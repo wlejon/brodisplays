@@ -1,6 +1,7 @@
 #include "win_display_service.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -143,6 +144,27 @@ Result persist_active_configuration() {
         return Result::failure("SetDisplayConfig(SDC_SAVE_TO_DATABASE) failed (error " + std::to_string(err) + ")");
     }
     return Result::success();
+}
+
+// SetDisplayConfig with SDC_ALLOW_CHANGES, and ChangeDisplaySettingsEx, can
+// report success while the driver keeps another mode (a Hyper-V display
+// accepts any refresh rate and keeps its own). A success has to mean the
+// display shows what was asked, so the result is checked against what the
+// display reports. Returns why it does not match, or an empty string.
+std::string mode_mismatch(const DisplaysSnapshot& snap, const std::string& id, const DisplayConfigChange& change) {
+    const DisplayInfo* d = snap.find_display(id);
+    if (!d) return "the display is gone after the change";
+    const DisplayMode& m = d->current_mode;
+    // A rotation swaps the source dimensions; only the refresh rate is
+    // comparable then.
+    const bool size_comparable = !change.orientation.has_value();
+    const bool size_ok = !size_comparable || ((!change.width || m.width == *change.width) &&
+                                              (!change.height || m.height == *change.height));
+    const bool rate_ok = !change.refresh_rate || std::abs(m.refresh_rate - *change.refresh_rate) < 1.0;
+    if (size_ok && rate_ok) return {};
+    char shows[96];
+    std::snprintf(shows, sizeof(shows), "%ux%u @ %.2f Hz", m.width, m.height, m.refresh_rate);
+    return std::string("the driver accepted the change but the display kept another mode (it shows ") + shows + ")";
 }
 
 } // namespace
@@ -448,6 +470,11 @@ Result WinDisplayService::apply_configuration(const DisplayConfigChange& change)
         return Result::failure("Failed to apply display configuration (code " + std::to_string(apply_res) + ")");
     }
 
+    const std::string mismatch = mode_mismatch(snapshot(), d->id, change);
+    if (!mismatch.empty()) {
+        ChangeDisplaySettingsExW(gdi_name.c_str(), &cur_dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        return Result::failure(mismatch);
+    }
     return Result::success();
 }
 
@@ -563,6 +590,15 @@ Result WinDisplayService::apply_temporary_configuration(
                     static_cast<UINT32>(new_paths.size()), new_paths.data(),
                     static_cast<UINT32>(new_modes.size()), new_modes.data(),
                     SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+                const std::string mismatch =
+                    sdc_err == ERROR_SUCCESS ? mode_mismatch(snapshot(), d->id, change) : std::string();
+                if (!mismatch.empty()) {
+                    auto p = orig_paths;
+                    auto m = orig_modes;
+                    SetDisplayConfig(static_cast<UINT32>(p.size()), p.data(), static_cast<UINT32>(m.size()),
+                                     m.data(), SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+                    return Result::failure(mismatch);
+                }
                 if (sdc_err == ERROR_SUCCESS) {
                     // The test configuration was applied without
                     // SDC_SAVE_TO_DATABASE, so the database still holds the
@@ -611,6 +647,14 @@ Result WinDisplayService::apply_temporary_configuration(
     if (apply_res != DISP_CHANGE_SUCCESSFUL) {
         return Result::failure("Failed to apply temporary display settings (code " + std::to_string(apply_res) + ")" +
                                (ccd_error.empty() ? "" : "; CCD: " + ccd_error));
+    }
+    const std::string mismatch = mode_mismatch(snapshot(), d->id, change);
+    if (!mismatch.empty()) {
+        DEVMODEW restore_dm = orig_dm;
+        ChangeDisplaySettingsExW(gdi_name.c_str(), &restore_dm, nullptr, wrote_registry ? CDS_UPDATEREGISTRY : 0,
+                                 nullptr);
+        ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
+        return Result::failure(mismatch);
     }
 
     // Start revert timer with rollback lambda
