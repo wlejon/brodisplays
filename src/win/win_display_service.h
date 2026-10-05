@@ -38,7 +38,7 @@ public:
     Result set_night_light(bool enabled, uint32_t temperature_kelvin = 4500) override;
 
 private:
-    void on_system_display_change();
+    void on_system_display_change(bool definite);
     DisplayInfo build_display_info(
         const DISPLAYCONFIG_PATH_INFO& path,
         const std::vector<DISPLAYCONFIG_MODE_INFO>& modes,
@@ -52,11 +52,6 @@ private:
 
     mutable std::mutex snapshot_mutex_;
     mutable DisplaysSnapshot last_snapshot_;
-    // Display id (monitor device path) -> GDI source name ("\\.\DISPLAYn").
-    // Written by snapshot() on the caller's and the watcher's threads.
-    mutable std::mutex gdi_mutex_;
-    mutable std::unordered_map<std::string, std::wstring> gdi_name_map_;
-    std::wstring gdi_name_for(const std::string& display_id) const;
 };
 
 } // namespace brodisplays

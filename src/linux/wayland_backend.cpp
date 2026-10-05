@@ -13,50 +13,9 @@
 #include <unistd.h>
 #include <vector>
 
-#include <wayland-client.h>
-#include "wlr-output-management-unstable-v1-client-protocol.h"
+#include "wayland_internal.h"
 
 namespace brodisplays {
-
-struct WaylandBackend::OutputData {
-    WaylandBackend* owner = nullptr;
-    uint32_t id = 0;
-    uint32_t version = 0;
-    wl_output* output = nullptr;
-    DisplayInfo info;
-    std::vector<DisplayMode> pending_modes; // modes of the batch before `done`
-    bool done = false;
-};
-
-struct WaylandBackend::ModeItem {
-    HeadData* head = nullptr;
-    zwlr_output_mode_v1* mode_obj = nullptr;
-    uint32_t w = 0;
-    uint32_t h = 0;
-    int32_t refresh_mhz = 0;
-    bool preferred = false;
-};
-
-struct WaylandBackend::HeadData {
-    WaylandBackend* owner = nullptr;
-    zwlr_output_head_v1* head = nullptr;
-    std::string name;
-    std::string description;
-    std::string make;
-    std::string model;
-    std::string serial_number;
-    int32_t phys_w = 0;
-    int32_t phys_h = 0;
-    int32_t x = 0;
-    int32_t y = 0;
-    int32_t transform = 0;
-    double scale = 1.0;
-    bool enabled = false;
-
-    // unique_ptr so the listener user-data pointers stay valid as modes arrive.
-    std::vector<std::unique_ptr<ModeItem>> modes;
-    zwlr_output_mode_v1* current_mode_obj = nullptr;
-};
 
 namespace {
 
@@ -298,6 +257,10 @@ struct WaylandBackend::Listeners {
             od->output = static_cast<wl_output*>(wl_registry_bind(reg, id, &wl_output_interface, od->version));
             wl_output_add_listener(od->output, &kOutputListener, od);
             self->outputs_.push_back(od);
+        } else if (std::strcmp(interface, zwlr_gamma_control_manager_v1_interface.name) == 0 &&
+                   !self->gamma_manager_) {
+            self->gamma_manager_ = static_cast<zwlr_gamma_control_manager_v1*>(
+                wl_registry_bind(reg, id, &zwlr_gamma_control_manager_v1_interface, 1));
         } else if (std::strcmp(interface, zwlr_output_manager_v1_interface.name) == 0 && !self->wlr_manager_) {
             self->wlr_version_ = std::min(version, 4u);
             self->wlr_manager_ = static_cast<zwlr_output_manager_v1*>(
@@ -309,6 +272,7 @@ struct WaylandBackend::Listeners {
         auto* self = static_cast<WaylandBackend*>(data);
         for (auto it = self->outputs_.begin(); it != self->outputs_.end(); ++it) {
             if ((*it)->id == id) {
+                self->drop_gamma(*it);
                 release_output(*it);
                 delete *it;
                 self->outputs_.erase(it);
@@ -371,11 +335,16 @@ WaylandBackend::~WaylandBackend() {
     heads_.clear();
 
     for (auto* od : outputs_) {
+        drop_gamma(od);
         release_output(od);
         delete od;
     }
     outputs_.clear();
 
+    if (gamma_manager_) {
+        zwlr_gamma_control_manager_v1_destroy(gamma_manager_);
+        gamma_manager_ = nullptr;
+    }
     if (wlr_manager_) {
         zwlr_output_manager_v1_destroy(wlr_manager_);
         wlr_manager_ = nullptr;
@@ -486,6 +455,22 @@ std::vector<DisplayInfo> WaylandBackend::snapshot() {
     std::vector<DisplayInfo> results;
     if (broken_) return results;
     if (!running_ && !roundtrip(lock)) return results;
+    if (!probe_gamma(lock)) return results;
+
+    // Night light as this backend shows it: through its gamma controls.
+    auto night_light_of = [this](const std::string& output_name) {
+        NightLightStatus st;
+        for (const auto* od : outputs_) {
+            if (od->info.id != output_name) continue;
+            const bool held = od->gamma && !od->gamma->failed;
+            st.supported = gamma_manager_ != nullptr && (held || od->gamma_usable == 1);
+            if (held && night_light_on_) {
+                st.enabled = true;
+                st.temperature_kelvin = night_light_kelvin_;
+            }
+        }
+        return st;
+    };
 
     if (wlr_manager_ && wlr_done_count_ > 0) {
         for (const auto* h : heads_) {
@@ -493,6 +478,7 @@ std::vector<DisplayInfo> WaylandBackend::snapshot() {
 
             DisplayInfo info;
             info.id = h->name.empty() ? ("Head-" + std::to_string(results.size() + 1)) : h->name;
+            info.device_name = h->name;
             info.name = h->description.empty() ? info.id : h->description;
             info.manufacturer = h->make;
             info.model = h->model.empty() ? info.name : h->model;
@@ -523,6 +509,7 @@ std::vector<DisplayInfo> WaylandBackend::snapshot() {
             if (h->transform % 2 == 1) std::swap(w, hgt);
             info.geometry.width = static_cast<uint32_t>(std::lround(w / info.scale.factor));
             info.geometry.height = static_cast<uint32_t>(std::lround(hgt / info.scale.factor));
+            info.night_light = night_light_of(h->name);
 
             results.push_back(std::move(info));
         }
@@ -537,6 +524,8 @@ std::vector<DisplayInfo> WaylandBackend::snapshot() {
             if (di.name.empty()) di.name = di.id;
         }
         di.adapter_name = "Wayland Compositor Output";
+        di.device_name = di.id;
+        di.night_light = night_light_of(od->info.id);
         di.is_connected = true;
         di.is_primary = results.empty();
         results.push_back(std::move(di));

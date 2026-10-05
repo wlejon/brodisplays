@@ -98,9 +98,21 @@ struct DisplayInfo {
     std::string adapter_name;    // GPU / adapter (e.g. "NVIDIA GeForce RTX 4090")
     std::string manufacturer;
     std::string model;
+    // The name the OS's window system knows this display by, for joining
+    // with other APIs: the GDI source device on Windows ("\\.\DISPLAY1",
+    // MONITORINFOEX::szDevice), the CGDirectDisplayID in decimal on macOS,
+    // the output / connector name on Linux ("DP-1").
+    std::string device_name;
     bool is_primary = false;
     bool is_internal = false;     // e.g. laptop eDP, built-in display
     bool is_connected = true;
+    // Showing an image right now: false while the display sleeps (macOS
+    // reports sleeping displays; their geometry is then not meaningful).
+    bool is_active = true;
+    // Non-empty when this display mirrors another one (clone mode): the id of
+    // the display whose desktop area it shows. A mirror occupies no desktop
+    // area of its own.
+    std::string mirror_of;
 
     DisplayGeometry geometry;
     uint32_t physical_width_mm = 0;
@@ -122,6 +134,11 @@ struct DisplayInfo {
 struct DisplaysSnapshot {
     std::chrono::system_clock::time_point timestamp = std::chrono::system_clock::now();
     std::vector<DisplayInfo> displays;
+
+    // Same displays, same state (the timestamp is not compared).
+    bool same_displays(const DisplaysSnapshot& other) const noexcept {
+        return displays == other.displays;
+    }
 
     const DisplayInfo* find_display(const std::string& display_id) const noexcept {
         for (const auto& d : displays) {

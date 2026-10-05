@@ -1,5 +1,7 @@
 #include "win_gamma.h"
 
+#include "common/color_temperature.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,42 +12,6 @@
 namespace brodisplays {
 
 namespace {
-
-void kelvin_to_rgb(uint32_t kelvin, double& r, double& g, double& b) {
-    // Clamp between 1000K and 10000K
-    double temp = static_cast<double>(std::clamp(kelvin, 1000u, 10000u)) / 100.0;
-
-    // Red
-    if (temp <= 66.0) {
-        r = 1.0;
-    } else {
-        r = temp - 60.0;
-        r = 329.698727446 * std::pow(r, -0.1332047592);
-        r = std::clamp(r / 255.0, 0.0, 1.0);
-    }
-
-    // Green
-    if (temp <= 66.0) {
-        g = temp;
-        g = 99.4708025861 * std::log(g) - 161.1195681661;
-        g = std::clamp(g / 255.0, 0.0, 1.0);
-    } else {
-        g = temp - 60.0;
-        g = 288.1221695283 * std::pow(g, -0.0755148492);
-        g = std::clamp(g / 255.0, 0.0, 1.0);
-    }
-
-    // Blue
-    if (temp >= 66.0) {
-        b = 1.0;
-    } else if (temp <= 19.0) {
-        b = 0.0;
-    } else {
-        b = temp - 10.0;
-        b = 138.5177312231 * std::log(b) - 305.0447927307;
-        b = std::clamp(b / 255.0, 0.0, 1.0);
-    }
-}
 
 std::wstring to_wide(const std::string& str) {
     if (str.empty()) return L"";

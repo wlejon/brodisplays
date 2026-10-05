@@ -31,7 +31,8 @@ void RevertManager::wait_for_rollback_locked(std::unique_lock<std::mutex>& lock)
 void RevertManager::start_temporary(
     std::string display_id,
     std::chrono::milliseconds timeout,
-    Rollback rollback_action) {
+    Rollback rollback_action,
+    Persist persist_action) {
     std::unique_lock<std::mutex> lock(mutex_);
     wait_for_rollback_locked(lock);
     if (pending_) {
@@ -44,6 +45,7 @@ void RevertManager::start_temporary(
     pending_display_id_ = std::move(display_id);
     deadline_ = std::chrono::steady_clock::now() + timeout;
     rollback_ = std::move(rollback_action);
+    persist_ = std::move(persist_action);
     cv_.notify_all();
 }
 
@@ -54,8 +56,24 @@ Result RevertManager::confirm() {
         return Result::failure("No configuration change is currently pending");
     }
     std::string confirmed_id = pending_display_id_;
+    if (persist_) {
+        // The persist step runs unlocked; reverting_ keeps the timer and any
+        // concurrent confirm/revert out until it has finished.
+        Persist persist = persist_;
+        reverting_ = true;
+        cv_.notify_all();
+        lock.unlock();
+        Result persisted = persist();
+        lock.lock();
+        reverting_ = false;
+        cv_.notify_all();
+        if (!persisted) {
+            return Result::failure("The configuration could not be persisted: " + persisted.error);
+        }
+    }
     pending_ = false;
     rollback_ = nullptr;
+    persist_ = nullptr;
     cv_.notify_all();
     lock.unlock();
 
@@ -86,6 +104,7 @@ Result RevertManager::revert_locked(std::unique_lock<std::mutex>& lock, const st
     }
     auto rollback = std::move(rollback_);
     rollback_ = nullptr;
+    persist_ = nullptr;
     std::string display_id = pending_display_id_;
     reverting_ = true;
     cv_.notify_all();

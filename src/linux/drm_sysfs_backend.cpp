@@ -97,6 +97,7 @@ std::vector<DisplayInfo> DrmSysfsBackend::enumerate() {
 
         DisplayInfo info;
         info.id = connector_name;
+        info.device_name = connector_name;
         info.name = connector_name;
         info.is_connected = true;
         info.is_primary = results.empty(); // First found is default primary

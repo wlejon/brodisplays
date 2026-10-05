@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
+
+#include <windows.h>
+#include <shellscalingapi.h>
 
 namespace {
 
@@ -56,6 +60,56 @@ int main() {
     CHECK(primary->scale.factor >= 1.0);
     CHECK(primary->scale.dpi >= 96);
     CHECK(!primary->available_modes.empty());
+
+    // device_name joins with the window system's monitors: every display that
+    // owns desktop area is an HMONITOR whose szDevice is its device_name and
+    // whose rcMonitor (physical pixels) is its geometry; the effective DPI is
+    // the monitor's. The process stays DPI-unaware on purpose: the service
+    // must answer in physical pixels and real DPI regardless.
+    struct Mon {
+        std::string device;
+        RECT rect;
+        UINT dpi;
+    };
+    std::vector<Mon> mons;
+    {
+        DPI_AWARENESS_CONTEXT old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR h, HDC, LPRECT, LPARAM p) -> BOOL {
+                MONITORINFOEXA mi{};
+                mi.cbSize = sizeof(mi);
+                GetMonitorInfoA(h, &mi);
+                UINT dx = 96, dy = 96;
+                GetDpiForMonitor(h, MDT_EFFECTIVE_DPI, &dx, &dy);
+                reinterpret_cast<std::vector<Mon>*>(p)->push_back(Mon{mi.szDevice, mi.rcMonitor, dx});
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&mons));
+        SetThreadDpiAwarenessContext(old);
+    }
+    size_t owners = 0;
+    for (const auto& d : snap.displays) {
+        std::printf("  %s: device %s, %d,%d %ux%u, dpi %d%s%s\n", d.id.c_str(), d.device_name.c_str(), d.geometry.x,
+                    d.geometry.y, d.geometry.width, d.geometry.height, d.scale.dpi,
+                    d.mirror_of.empty() ? "" : ", mirrors ", d.mirror_of.c_str());
+        CHECK(!d.device_name.empty());
+        CHECK(d.is_active);
+        if (!d.mirror_of.empty()) continue;
+        ++owners;
+        const Mon* m = nullptr;
+        for (const auto& c : mons)
+            if (c.device == d.device_name) m = &c;
+        CHECK(m != nullptr);
+        if (!m) continue;
+        CHECK_EQ(d.geometry.x, static_cast<int32_t>(m->rect.left));
+        CHECK_EQ(d.geometry.y, static_cast<int32_t>(m->rect.top));
+        CHECK_EQ(d.geometry.width, static_cast<uint32_t>(m->rect.right - m->rect.left));
+        CHECK_EQ(d.geometry.height, static_cast<uint32_t>(m->rect.bottom - m->rect.top));
+        CHECK_EQ(d.scale.dpi, static_cast<int32_t>(m->dpi));
+        CHECK_EQ(d.is_primary, m->rect.left == 0 && m->rect.top == 0);
+    }
+    CHECK_EQ(owners, mons.size());
 
     // Verify against OS command line oracle: Get-CimInstance Win32_VideoController
     std::string oracle_w_str = run_cmd(

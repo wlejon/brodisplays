@@ -39,7 +39,15 @@ public:
         const DisplayConfigChange& change,
         std::chrono::milliseconds timeout = std::chrono::seconds(10)) = 0;
 
-    // Confirms and persists the currently pending temporary configuration.
+    // Confirms the pending temporary configuration and stops the revert
+    // timer. Where the OS keeps a display-configuration store it is
+    // persisted there, so it survives logout and reboot: the CCD database on
+    // Windows (SetDisplayConfig SDC_SAVE_TO_DATABASE, or the GDI registry on
+    // the fallback path), WindowServer's display preferences on macOS
+    // (kCGConfigurePermanently). Linux has no such store a client can write
+    // (the compositor or X server owns its own configuration files), so
+    // there it lasts for the session. If persisting fails the configuration
+    // stays pending, the error is returned, and the revert timer runs on.
     virtual Result confirm_configuration() = 0;
 
     // Manually rolls back any pending temporary configuration immediately.
@@ -48,7 +56,11 @@ public:
     // Checks whether an unconfirmed temporary configuration is currently active.
     virtual bool is_revert_pending() const = 0;
 
-    // Controls Night Light / Night Shift / color temperature.
+    // Controls Night Light / Night Shift / color temperature. On Linux the
+    // desktop's own night light is driven where one runs (KDE Plasma's KWin,
+    // GNOME's settings daemon), else gamma ramps where nothing else owns
+    // them (wlr-gamma-control on wlroots compositors, RandR CRTC gamma on
+    // X11); anything else fails with the reason.
     virtual Result set_night_light(bool enabled, uint32_t temperature_kelvin = 4500) = 0;
 };
 

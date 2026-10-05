@@ -2,7 +2,15 @@
 
 namespace brodisplays {
 
-WinDisplayWatcher::WinDisplayWatcher(std::function<void()> on_change)
+DpiScope::DpiScope() {
+    old_ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+}
+
+DpiScope::~DpiScope() {
+    if (old_) SetThreadDpiAwarenessContext(old_);
+}
+
+WinDisplayWatcher::WinDisplayWatcher(std::function<void(bool)> on_change)
     : on_change_(std::move(on_change)) {
     ready_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     thread_ = std::thread(&WinDisplayWatcher::thread_func, this);
@@ -27,19 +35,23 @@ WinDisplayWatcher::~WinDisplayWatcher() {
 
 void WinDisplayWatcher::thread_func() {
     thread_id_ = GetCurrentThreadId();
+    // The snapshots taken from this thread see physical pixels and real DPI.
+    SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    const wchar_t* kClassName = L"BroDisplaysWatcherWindowClass";
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &WinDisplayWatcher::window_proc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = kClassName;
+    // Several services in one process share the class; a second
+    // registration fails harmlessly with ERROR_CLASS_ALREADY_EXISTS.
     RegisterClassExW(&wc);
 
+    // Hidden, never activated, absent from the taskbar and Alt+Tab.
     hwnd_ = CreateWindowExW(
-        0, kClassName, L"BroDisplaysWatcher", 0,
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kClassName, L"BroDisplaysWatcher", WS_POPUP,
         0, 0, 0, 0,
-        HWND_MESSAGE, nullptr, wc.hInstance, this);
+        nullptr, nullptr, wc.hInstance, this);
 
     if (ready_event_) {
         SetEvent(ready_event_);
@@ -55,6 +67,7 @@ void WinDisplayWatcher::thread_func() {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    // Fails while another service's window still uses the class; fine.
     UnregisterClassW(kClassName, wc.hInstance);
 }
 
@@ -72,16 +85,17 @@ LRESULT CALLBACK WinDisplayWatcher::window_proc(HWND hwnd, UINT msg, WPARAM wpar
 
     switch (msg) {
         case WM_DISPLAYCHANGE:
-        case WM_SETTINGCHANGE: {
-            if (watcher->on_change_) {
-                watcher->on_change_();
-            }
+            if (watcher->on_change_) watcher->on_change_(true);
             return 0;
-        }
-        case WM_CLOSE: {
+        case WM_SETTINGCHANGE:
+        case WM_DPICHANGED:
+        case WM_DEVICECHANGE:
+            if (watcher->on_change_) watcher->on_change_(false);
+            if (msg == WM_DEVICECHANGE) return TRUE;
+            return 0;
+        case WM_CLOSE:
             PostQuitMessage(0);
             return 0;
-        }
     }
 
     return DefWindowProcW(hwnd, msg, wparam, lparam);

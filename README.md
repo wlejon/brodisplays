@@ -16,6 +16,8 @@ Part of the **bro** ecosystem, designed in the mould of `brosys` and `htmlayout`
   - Scale factor and DPI reporting (Retina, Per-Monitor DPI v2, Wayland/X11 scaling).
   - Display orientation (Normal, 90°, 180°, 270°).
   - Connection status and primary display identification.
+  - `device_name`, the OS's own handle for the display (GDI `\\.\DISPLAYn` on Windows, the `CGDirectDisplayID` on macOS, the connector / output name on Linux), so hosts can join with native per-monitor APIs.
+  - `is_active` (false while a display sleeps or is disabled) and `mirror_of` (the display a mirror shows).
 - **Hardware EDID Parser**:
   - Full 128-byte base EDID checksum validation.
   - Compressed 5-bit PNP 3-letter manufacturer ID decoding (e.g. `SAM` -> Samsung).
@@ -23,7 +25,7 @@ Part of the **bro** ecosystem, designed in the mould of `brosys` and `htmlayout`
   - Monitor descriptor parsing (display name, serial number).
 - **Test-Then-Revert Semantics**:
   - `apply_temporary_configuration(change, timeout)`: Applies display configuration changes with an automatic rollback timer.
-  - `confirm_configuration()`: Commits changes if the user accepts them.
+  - `confirm_configuration()`: Commits changes if the user accepts them, and persists them where the OS keeps a display store (Windows CCD database, macOS WindowServer preferences); on Linux they last for the session. A failed persist keeps the change pending and the timer running.
   - `revert_configuration()`: Instantly reverts back to previous stable parameters.
   - **Destructor Safety**: Reverts back automatically if the service is destroyed while a temporary configuration is pending.
 - **Reactive Event Queue**:
@@ -44,8 +46,9 @@ Part of the **bro** ecosystem, designed in the mould of `brosys` and `htmlayout`
 | **Fallback Backend**| GDI (`EnumDisplaySettingsExW`, `ChangeDisplaySettingsExW`) | X11 XRandR 1.5+ / DRM Sysfs (`/sys/class/drm`) | IOKit (`IODisplayConnect`) |
 | **Scale / DPI** | `GetDpiForMonitor` (Per-Monitor DPI v2) | Wayland scale factor / XRandR DPI | Points-to-pixels scale calculation |
 | **EDID Source** | CCD `DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME` / WMI | XRandR `EDID` atom / Sysfs `/sys/class/drm/*/edid` | IOKit `IODisplayEDID` dictionary |
-| **Night Light** | Windows GDI Gamma Ramp (`SetDeviceGammaRamp`) | Gamma / Honest unsupported return | CoreGraphics Display Transfer Table (`CGSetDisplayTransferByTable`) |
-| **Hotplug Events** | Message-only HWND (`WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE`) | Wayland registry / XRandR event loop with non-blocking pipe wake | `CGDisplayRegisterReconfigurationCallback` |
+| **Night Light** | Windows GDI Gamma Ramp (`SetDeviceGammaRamp`) | KDE Plasma (KWin, via `kwinrc` + D-Bus) → GNOME (gsd colour plugin, via GSettings + D-Bus) → `wlr-gamma-control` → RandR CRTC gamma; refused with the reason otherwise | CoreGraphics Display Transfer Table (`CGSetDisplayTransferByTable`) |
+| **Confirm persists to** | CCD database (`SDC_SAVE_TO_DATABASE`) / GDI registry | session only (no client-writable store) | WindowServer preferences (`kCGConfigurePermanently`) |
+| **Hotplug Events** | Hidden top-level HWND (`WM_DISPLAYCHANGE`; `WM_SETTINGCHANGE` / `WM_DPICHANGED` / `WM_DEVICECHANGE` when the topology really differs) | Wayland registry / RandR event loop over XCB with non-blocking pipe wake | `CGDisplayRegisterReconfigurationCallback` plus a 500 ms topology poll (the callback needs a main run loop the host may not run) |
 
 ---
 
@@ -63,17 +66,22 @@ brodisplays/
 │   ├── common/
 │   │   ├── edid.cpp           # EDID base checksum & descriptor decoding
 │   │   ├── revert_timer.h     # RevertManager background countdown timer
-│   │   ├── revert_timer.cpp   # Timer loop & rollback orchestration
+│   │   ├── revert_timer.cpp   # Timer loop, rollback & confirm-persist orchestration
+│   │   ├── color_temperature.h/.cpp # Kelvin to RGB gains (shared by all gamma paths)
 │   │   └── types.cpp          # Result formatting & helpers
 │   ├── win/
 │   │   ├── win_display_service.h/.cpp # CCD + GDI display service
-│   │   ├── win_events.h/.cpp          # Background win32 message pump
+│   │   ├── win_events.h/.cpp          # Hidden top-level watcher window + its message pump
 │   │   └── win_gamma.h/.cpp           # Kelvin-to-gamma ramp calculator
 │   ├── linux/
 │   │   ├── drm_sysfs_backend.h/.cpp   # Headless /sys/class/drm parser
 │   │   ├── linux_display_service.h/.cpp# Priority dispatcher (Wayland -> X11 -> DRM)
 │   │   ├── wayland_backend.h/.cpp     # wlr-output-management & wl_output backend
-│   │   └── x11_backend.h/.cpp         # XRandR output & CRTC enumeration
+│   │   ├── wayland_gamma.cpp          # wlr-gamma-control night light
+│   │   ├── wayland_internal.h         # Protocol object records shared by the above
+│   │   ├── desktop_night_light.h/.cpp # KWin / GNOME night light over D-Bus (GIO)
+│   │   ├── x11_connection.h/.cpp      # Bounded XCB connection + watchdog
+│   │   └── x11_backend.h/.cpp         # RandR outputs, CRTCs, modes, gamma over XCB
 │   └── mac/
 │       ├── mac_display_service.h/.mm  # CoreGraphics + IOKit display service
 │       ├── mac_events.h/.mm           # CGDisplayRegisterReconfigurationCallback
@@ -81,9 +89,10 @@ brodisplays/
 └── tests/
     ├── check.h                        # Minimal test runner (CHECK, REQUIRE, finish, skip)
     ├── common/                        # Unit tests for EDID, event queue, revert timer
-    ├── win/                           # Windows query, revert, gamma, event tests
-    ├── linux/                         # Linux query, revert, sysfs DRM tests
-    └── mac/                           # macOS query, revert, gamma tests
+    ├── win/                           # Windows query, revert, confirm, gamma, event tests
+    ├── linux/                         # Linux query, revert, sysfs DRM, unresponsive / stopped
+    │                                  # servers, night light per environment (private servers)
+    └── mac/                           # macOS query, revert, confirm, gamma tests
 ```
 
 All source files are strictly maintained under 1,000 lines.
@@ -200,7 +209,27 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### Linux (GCC 12+ / Clang, Wayland + X11)
 
-Dependencies: `libwayland-client`, `wayland-scanner`, `libx11`, `libxrandr`.
+Dependencies: `libwayland-client`, `wayland-scanner`, `xcb`, `xcb-randr`,
+`libXau`; optional `gio-2.0` (`-DBRODISPLAYS_WITH_GIO`, on when found) for
+the KDE / GNOME night lights.
+
+X11 is spoken through XCB rather than Xlib, so no X call can block forever
+or exit the process: the connection is opened with its own bounded connect,
+every request runs under a watchdog, and a server that stops answering
+mid-session (frozen, wedged, SIGSTOPped) has its connection abandoned after
+2 s, after which the service answers from the kernel's view.
+
+Night light follows the desktop: under KDE Plasma KWin's own night light is
+switched on (constant mode at the requested temperature, the user's schedule
+mode put back when switched off), under GNOME the settings daemon's
+(a midnight-to-midnight manual schedule, the user's schedule put back).
+Elsewhere gamma ramps are used where nothing else owns them:
+`wlr-gamma-control` on wlroots compositors (held while on; the compositor
+restores the ramps when released), RandR CRTC gamma on X11 (saved ramps put
+back on disable or destruction). Outputs the compositor gives no ramp
+(headless and nested backends), a GNOME session whose mutter reports
+`NightLightSupported=false`, or a desktop without GIO support are reported
+unsupported and `set_night_light` fails with the reason.
 
 One display-server backend serves a session: Wayland when `WAYLAND_DISPLAY`
 (or `WAYLAND_SOCKET`) is set, else X11 when `DISPLAY` names a server that
@@ -238,7 +267,9 @@ display modes or load gamma ramps run only with
 | :--- | :--- |
 | `test_win_revert`, `test_mac_revert`, `test_linux_revert` | Switches the primary display to another refresh rate (then another resolution), lets the revert timer / an explicit revert restore it, and checks the restored mode and the `ConfigurationReverted` event |
 | `test_win_gamma`, `test_mac_gamma` | Tints the primary display with a 4500 K night-light ramp, then restores it |
+| `test_win_confirm`, `test_mac_confirm` | Confirms a temporary refresh-rate change and checks the OS store (CCD database / WindowServer preferences) recorded it, then confirms the original back and checks the store again |
 | `test_linux_query` (opt-in part only) | Re-applies the current mode through the active backend |
+| `test_linux_night_light_x11`, `_wlr`, `_kwin`, `_gnome` | Nothing of the user's: each starts its own private server (Xorg dummy, headless sway, virtual KWin, headless mutter + gsd-color) with its own runtime dir, config home and session bus, and checks night light against it; skipped when that server is not installed |
 
 ```bash
 BRODISPLAYS_TEST_MUTATE=1 ctest --test-dir build -C Release -R "revert|gamma" --output-on-failure
@@ -248,4 +279,6 @@ Run them on a machine whose screen nobody is using, or against a private
 display server (headless sway, an Xorg `dummy` driver server). macOS refuses
 mode changes while the display sleeps (`caffeinate -u` wakes it).
 `test_linux_unresponsive` (always on) checks that servers which accept a
-connection but never answer cannot hang the service.
+connection but never answer cannot hang the service, and
+`test_linux_x11_stopped` (always on, private Xvfb) that an X server frozen
+mid-session cannot either.

@@ -10,8 +10,10 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace bdtest {
 
@@ -75,8 +77,37 @@ inline int run_revert_scenario(const char* name) {
                                        std::chrono::milliseconds(5000));
     CHECK(reverted);
 
+    // The watcher saw both changes (to the test mode and back): a
+    // DisplaysChanged showing the test mode, and later one showing the
+    // original. It runs without a main run loop here, so on macOS this is the
+    // poller's doing.
+    std::vector<brodisplays::DisplayEvent> seen;
+    // Index of the first DisplaysChanged at or after `from` showing `want`.
+    auto saw_mode = [&](const brodisplays::DisplayMode& want, size_t from) -> size_t {
+        auto more = service->events().drain();
+        seen.insert(seen.end(), more.begin(), more.end());
+        for (size_t i = from; i < seen.size(); ++i) {
+            if (auto* c = std::get_if<brodisplays::DisplaysChanged>(&seen[i])) {
+                if (const auto* p = c->snapshot.find_display(disp_id)) {
+                    if (p->current_mode.width == want.width && p->current_mode.height == want.height &&
+                        std::abs(p->current_mode.refresh_rate - want.refresh_rate) < 1.0) return i;
+                }
+            }
+        }
+        return SIZE_MAX;
+    };
+    size_t at_alt = SIZE_MAX, at_orig = SIZE_MAX;
+    CHECK(bstest::wait_until([&] { return (at_alt = saw_mode(*alt, 0)) != SIZE_MAX; },
+                             std::chrono::milliseconds(3000)));
+    if (at_alt != SIZE_MAX) {
+        CHECK(bstest::wait_until([&] { return (at_orig = saw_mode(orig, at_alt + 1)) != SIZE_MAX; },
+                                 std::chrono::milliseconds(3000)));
+    }
+    std::printf("DisplaysChanged: test mode %s, original mode %s\n", at_alt != SIZE_MAX ? "seen" : "MISSING",
+                at_orig != SIZE_MAX ? "seen" : "MISSING");
+
     bool found_revert_event = false;
-    for (const auto& ev : service->events().drain()) {
+    for (const auto& ev : seen) {
         if (auto* rev = std::get_if<brodisplays::ConfigurationReverted>(&ev)) {
             if (rev->display_id == disp_id) {
                 found_revert_event = true;

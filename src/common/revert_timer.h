@@ -14,14 +14,16 @@ namespace brodisplays {
 
 // Drives the "Keep these changes?" window of a temporary configuration.
 //
-// State machine: idle -> pending -> (confirmed | reverting -> idle).
+// State machine: idle -> pending -> (confirming -> idle | reverting -> idle).
 // A configuration stays *pending* until its rollback has fully run and the
 // ConfigurationReverted event is on the queue, so an observer that waits for
 // !is_pending() always sees the restored display state and the event. Calls
-// that arrive while a rollback is in flight wait for it to finish first.
+// that arrive while a rollback or a confirmation is in flight wait for it to
+// finish first; the timer does not fire while the persist step runs.
 class RevertManager {
 public:
     using Rollback = std::function<Result()>;
+    using Persist = std::function<Result()>;
 
     explicit RevertManager(MessageQueue<DisplayEvent>& events);
     ~RevertManager();
@@ -31,12 +33,17 @@ public:
 
     // Starts a temporary configuration window with an automatic revert timer.
     // If a previous temporary configuration was already pending, it is reverted first.
+    // `persist_action` (optional) is what confirm() runs to make the
+    // configuration permanent.
     void start_temporary(
         std::string display_id,
         std::chrono::milliseconds timeout,
-        Rollback rollback_action);
+        Rollback rollback_action,
+        Persist persist_action = nullptr);
 
-    // Confirms and cancels the revert timer.
+    // Runs the persist action and, when it succeeds, ends the window
+    // (ConfigurationConfirmed). When it fails the configuration stays
+    // pending with its timer still running, and the error is returned.
     Result confirm();
 
     // Immediately reverts and cancels the timer; returns the rollback's result.
@@ -55,10 +62,11 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     bool pending_ = false;
-    bool reverting_ = false;
+    bool reverting_ = false;   // a rollback or a persist step is in flight
     std::string pending_display_id_;
     std::chrono::steady_clock::time_point deadline_;
     Rollback rollback_;
+    Persist persist_;
     std::thread timer_thread_;
     bool stopping_ = false;
 };

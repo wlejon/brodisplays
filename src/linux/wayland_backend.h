@@ -16,6 +16,7 @@ struct wl_display;
 struct wl_registry;
 struct wl_output;
 struct zwlr_output_manager_v1;
+struct zwlr_gamma_control_manager_v1;
 
 namespace brodisplays {
 
@@ -41,13 +42,23 @@ public:
     // True when the compositor offers zwlr_output_management_v1.
     bool can_configure();
 
+    // Night light through zwlr_gamma_control_manager_v1 (wlroots
+    // compositors): every output gets a linear ramp scaled by the black-body
+    // gains of the temperature. The compositor keeps a ramp only while its
+    // control object lives, so it lasts until disabled or until the backend
+    // is destroyed (the compositor then restores the original ramps).
+    bool gamma_supported();
+    Result set_night_light(bool enabled, uint32_t temperature_kelvin);
+
     void start_watcher(std::function<void()> on_change);
     void stop_watcher();
 
     struct HeadData;
     struct OutputData;
     struct ModeItem;
+    struct GammaControl;
     struct Listeners;
+    struct GammaListeners;
 
 private:
     explicit WaylandBackend(wl_display* display);
@@ -63,10 +74,18 @@ private:
     void mark_broken(const char* why);
     void notify_change();
     void event_loop_func();
+    void drop_gamma(OutputData* od);  // state_mutex_ held
+    // Finds out which outputs take a gamma ramp, for those not known yet.
+    // A compositor with no ramp for an output (headless and nested
+    // backends) or one another client already holds fails the probe.
+    bool probe_gamma(std::unique_lock<std::recursive_mutex>& lock);
 
     wl_display* display_ = nullptr;
     wl_registry* registry_ = nullptr;
     zwlr_output_manager_v1* wlr_manager_ = nullptr;
+    zwlr_gamma_control_manager_v1* gamma_manager_ = nullptr;
+    bool night_light_on_ = false;
+    uint32_t night_light_kelvin_ = 6500;
     uint32_t wlr_version_ = 0;
     uint32_t wlr_serial_ = 0;
     uint32_t wlr_done_count_ = 0;

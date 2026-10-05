@@ -26,8 +26,11 @@ LinuxDisplayService::LinuxDisplayService(const DisplayServiceConfig& config)
     // used only when there is no Wayland compositor to talk to.
     std::string err;
     wayland_backend_ = WaylandBackend::create(&err);
-    if (!wayland_backend_ && X11Backend::is_available()) {
+    if (!wayland_backend_) {
         x11_backend_ = X11Backend::create(&err);
+    }
+    if (config_.enable_gamma) {
+        desktop_night_light_ = DesktopNightLight::detect();
     }
 
     last_snapshot_ = snapshot();
@@ -45,6 +48,9 @@ LinuxDisplayService::~LinuxDisplayService() {
     if (x11_backend_) x11_backend_->stop_watcher();
     if (wayland_backend_) wayland_backend_->stop_watcher();
     revert_manager_.reset();
+    // Gamma ramps a backend set are handed back as it goes (X11 restores
+    // them; a Wayland compositor does once the connection closes). A
+    // desktop's night light is the desktop's setting and stays as set.
 }
 
 MessageQueue<DisplayEvent>& LinuxDisplayService::events() {
@@ -103,6 +109,15 @@ DisplaysSnapshot LinuxDisplayService::snapshot() const {
     // Enrich with hardware EDID if missing
     enrich_with_sysfs_edid(snap.displays);
 
+    // A desktop's night light covers every display; where a desktop owns the
+    // gamma ramps but cannot be driven (no GIO), nothing here can.
+    if (desktop_night_light_) {
+        NightLightStatus st = desktop_night_light_->status();
+        for (auto& d : snap.displays) d.night_light = st;
+    } else if (desktop_owns_gamma() && !wayland_backend_) {
+        for (auto& d : snap.displays) d.night_light = NightLightStatus{};
+    }
+
     return snap;
 }
 
@@ -120,10 +135,7 @@ Result LinuxDisplayService::apply_temporary_configuration(
     const DisplayConfigChange& change,
     std::chrono::milliseconds timeout) {
     auto snap = snapshot();
-    const auto* d = snap.find_display(change.display_id);
-    if (!d && !snap.displays.empty()) {
-        d = &snap.displays.front();
-    }
+    const auto* d = change.display_id.empty() ? snap.primary_display() : snap.find_display(change.display_id);
     if (!d) {
         return Result::failure("Display not found: " + change.display_id);
     }
@@ -164,9 +176,30 @@ bool LinuxDisplayService::is_revert_pending() const {
     return revert_manager_->is_pending();
 }
 
-Result LinuxDisplayService::set_night_light(bool /*enabled*/, uint32_t /*temperature_kelvin*/) {
-    // Honest capability reporting: not supported without color manager or gamma protocol
-    return Result::failure("Night light not supported on this Linux display server");
+// The desktop's own night light first (it owns the ramps and would undo or
+// fight anything else), then gamma ramps where nothing else owns them:
+// wlr-gamma-control on wlroots compositors, RandR CRTC gamma on X11.
+Result LinuxDisplayService::set_night_light(bool enabled, uint32_t temperature_kelvin) {
+    std::lock_guard<std::mutex> lock(night_light_mutex_);
+    if (desktop_night_light_) {
+        return desktop_night_light_->set(enabled, temperature_kelvin);
+    }
+    if (wayland_backend_) {
+        if (wayland_backend_->gamma_supported()) return wayland_backend_->set_night_light(enabled, temperature_kelvin);
+        return Result::failure(desktop_owns_gamma()
+                                   ? "The desktop's night light cannot be driven (brodisplays was built without GIO)"
+                                   : "The Wayland compositor offers no night light control: no output takes a "
+                                     "wlr-gamma-control ramp (protocol missing, outputs without gamma, or held "
+                                     "by another client) and no KDE or GNOME night light service runs");
+    }
+    if (x11_backend_) {
+        if (desktop_owns_gamma()) {
+            return Result::failure("The desktop's night light cannot be driven (brodisplays was built without GIO)");
+        }
+        if (x11_backend_->broken()) return Result::failure("The X server stopped answering");
+        return x11_backend_->set_night_light(enabled, temperature_kelvin);
+    }
+    return Result::failure("Night light needs a display server (no Wayland compositor or X server in this session)");
 }
 
 } // namespace brodisplays

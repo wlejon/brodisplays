@@ -2,9 +2,16 @@
 #include "brodisplays/display_service.h"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <regex>
 #include <string>
+
+// Oracle: system_profiler's JSON display list, matched to our displays by
+// CGDirectDisplayID (_spdisplays_displayID). It reports the current pixel
+// size, the desktop size in points with the refresh rate, main, sleep and
+// mirror state.
 
 namespace {
 
@@ -15,7 +22,7 @@ struct PipeCloser {
 };
 
 std::string run_cmd(const char* cmd) {
-    std::array<char, 256> buffer;
+    std::array<char, 512> buffer;
     std::string result;
     std::unique_ptr<FILE, PipeCloser> pipe(popen(cmd, "r"));
     if (!pipe) return "";
@@ -23,6 +30,23 @@ std::string run_cmd(const char* cmd) {
         result += buffer.data();
     }
     return result;
+}
+
+// The JSON object that carries "_spdisplays_displayID" : "<id>".
+std::string profiler_block(const std::string& json, const std::string& id) {
+    const std::string key = "\"_spdisplays_displayID\" : \"" + id + "\"";
+    size_t at = json.find(key);
+    if (at == std::string::npos) return "";
+    size_t open = json.rfind('{', at);
+    size_t close = json.find('}', at);
+    if (open == std::string::npos || close == std::string::npos) return "";
+    return json.substr(open, close - open);
+}
+
+std::string field(const std::string& block, const std::string& name) {
+    std::smatch m;
+    std::regex re("\"" + name + "\" : \"([^\"]*)\"");
+    return std::regex_search(block, m, re) ? m[1].str() : std::string();
 }
 
 } // namespace
@@ -40,32 +64,42 @@ int main() {
 
     const auto* primary = snap.primary_display();
     REQUIRE(primary != nullptr);
+    CHECK(primary->is_primary);
     std::printf("Primary display ID: %s, Name: %s\n", primary->id.c_str(), primary->name.c_str());
-    std::printf("Resolution: %ux%u @ %.1f Hz\n",
-        primary->current_mode.width, primary->current_mode.height, primary->current_mode.refresh_rate);
-    std::printf("Scale factor: %.2f (DPI %d)\n", primary->scale.factor, primary->scale.dpi);
 
-    CHECK(!primary->id.empty());
-    CHECK(!primary->name.empty());
-    CHECK(primary->current_mode.width > 0);
-    CHECK(primary->current_mode.height > 0);
-    CHECK(!primary->available_modes.empty());
+    std::string json = run_cmd("system_profiler -json SPDisplaysDataType 2>/dev/null");
+    REQUIRE(!json.empty());
+    for (const auto& d : snap.displays) {
+        std::printf("Display %s '%s': %ux%u px @ %.2f Hz, %ux%u pt at %d,%d, scale %.2f, active %d, mirror_of '%s'\n",
+                    d.id.c_str(), d.name.c_str(), d.current_mode.width, d.current_mode.height,
+                    d.current_mode.refresh_rate, d.geometry.width, d.geometry.height, d.geometry.x, d.geometry.y,
+                    d.scale.factor, d.is_active, d.mirror_of.c_str());
+        CHECK(!d.id.empty());
+        CHECK(!d.name.empty());
+        CHECK_EQ(d.device_name, d.id);
+        CHECK(d.current_mode.width > 0);
+        CHECK(d.current_mode.height > 0);
+        CHECK(!d.available_modes.empty());
 
-    // Compare against macOS system_profiler SPDisplaysDataType
-    std::string profiler_out = run_cmd("system_profiler SPDisplaysDataType 2>/dev/null");
-    if (!profiler_out.empty()) {
-        std::printf("system_profiler oracle found output (%zu bytes)\n", profiler_out.size());
-        bool found_name = (profiler_out.find(primary->name) != std::string::npos);
-        if (found_name) {
-            std::printf("Matched display name '%s' in system_profiler\n", primary->name.c_str());
-            CHECK(found_name);
+        std::string block = profiler_block(json, d.id);
+        CHECK(!block.empty());
+        if (block.empty()) continue;
+        const std::string pixels = field(block, "_spdisplays_pixels");
+        const std::string resolution = field(block, "_spdisplays_resolution");
+        std::printf("  system_profiler: pixels '%s', resolution '%s'\n", pixels.c_str(), resolution.c_str());
+        CHECK_EQ(pixels, std::to_string(d.current_mode.width) + " x " + std::to_string(d.current_mode.height));
+        std::smatch m;
+        if (std::regex_search(resolution, m, std::regex("(\\d+) x (\\d+) @ ([0-9.]+)Hz"))) {
+            CHECK_EQ(std::stoul(m[1].str()), static_cast<unsigned long>(d.geometry.width));
+            CHECK_EQ(std::stoul(m[2].str()), static_cast<unsigned long>(d.geometry.height));
+            CHECK(std::abs(std::stod(m[3].str()) - d.current_mode.refresh_rate) < 0.5);
         } else {
-            // Also check resolution string
-            std::string res_pattern = std::to_string(primary->current_mode.width) + " x " +
-                                      std::to_string(primary->current_mode.height);
-            bool found_res = (profiler_out.find(res_pattern) != std::string::npos);
-            CHECK(found_name || found_res);
+            CHECK(!"_spdisplays_resolution not parsed");
         }
+        CHECK_EQ(field(block, "spdisplays_main") == "spdisplays_yes", d.is_primary);
+        CHECK_EQ(field(block, "spdisplays_asleep") == "spdisplays_yes", !d.is_active);
+        const std::string mirror = field(block, "spdisplays_mirror");
+        if (mirror == "spdisplays_off") CHECK(d.mirror_of.empty());
     }
 
     return bstest::finish("test_mac_query");

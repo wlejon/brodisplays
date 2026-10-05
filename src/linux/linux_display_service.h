@@ -8,6 +8,7 @@
 #include "brodisplays/display_service.h"
 #include "brodisplays/event_queue.h"
 #include "common/revert_timer.h"
+#include "desktop_night_light.h"
 #include "drm_sysfs_backend.h"
 #include "wayland_backend.h"
 #include "x11_backend.h"
@@ -42,6 +43,9 @@ private:
 
     std::unique_ptr<WaylandBackend> wayland_backend_;
     std::unique_ptr<X11Backend> x11_backend_;
+    // The desktop's own night light (KDE Plasma, GNOME) when it runs one.
+    std::unique_ptr<DesktopNightLight> desktop_night_light_;
+    std::mutex night_light_mutex_;
 
     mutable std::mutex snapshot_mutex_;
     mutable DisplaysSnapshot last_snapshot_;

@@ -167,6 +167,57 @@ int main() {
         CHECK(manager.confirm().ok);
     }
 
+    // 8. confirm() runs the persist step; its failure keeps the configuration
+    //    pending (the timer then still reverts it) and is reported.
+    {
+        brodisplays::RevertManager manager(queue);
+        std::atomic<int> persisted{0};
+        std::atomic<bool> rolled_back{false};
+        manager.start_temporary(
+            "disp-persist", std::chrono::milliseconds(5000),
+            [&] { rolled_back = true; return Result::success(); },
+            [&] { ++persisted; return Result::success(); });
+        CHECK(manager.confirm().ok);
+        CHECK_EQ(persisted.load(), 1);
+        CHECK(!manager.is_pending());
+        CHECK(!rolled_back.load());
+        queue.drain();
+
+        manager.start_temporary(
+            "disp-persist-fail", std::chrono::milliseconds(300),
+            [&] { rolled_back = true; return Result::success(); },
+            [] { return Result::failure("database refused"); });
+        auto res = manager.confirm();
+        CHECK(!res.ok);
+        CHECK(res.error.find("database refused") != std::string::npos);
+        CHECK(manager.is_pending());
+        bool reverted = bstest::wait_until([&] { return !manager.is_pending(); }, std::chrono::milliseconds(2000));
+        CHECK(reverted);
+        CHECK(rolled_back.load());
+        auto events = queue.drain();
+        CHECK(find_revert(events, "disp-persist-fail") != nullptr);
+        for (const auto& ev : events) CHECK(!std::holds_alternative<brodisplays::ConfigurationConfirmed>(ev));
+    }
+
+    // 9. The timer does not fire while a (slow) persist step runs, even past
+    //    the deadline: a confirmation that started in time wins.
+    {
+        brodisplays::RevertManager manager(queue);
+        std::atomic<bool> rolled_back{false};
+        manager.start_temporary(
+            "disp-slow-persist", std::chrono::milliseconds(100),
+            [&] { rolled_back = true; return Result::success(); },
+            [] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                return Result::success();
+            });
+        CHECK(manager.confirm().ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(!rolled_back.load());
+        CHECK(!manager.is_pending());
+        CHECK(find_revert(queue.drain(), "disp-slow-persist") == nullptr);
+    }
+
     // 7. Destruction rolls back unconfirmed temporary changes
     {
         std::atomic<bool> rolled_back{false};

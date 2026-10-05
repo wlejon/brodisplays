@@ -122,6 +122,29 @@ std::vector<DisplayMode> query_available_modes(const std::wstring& gdi_name) {
     return modes;
 }
 
+// Saves the active CCD configuration to the display database (what Windows
+// restores at the next logon or reconnect of this monitor set). Re-applying
+// the active configuration changes nothing on screen.
+Result persist_active_configuration() {
+    UINT32 path_count = 0, mode_count = 0;
+    LONG err = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
+    if (err != ERROR_SUCCESS) {
+        return Result::failure("GetDisplayConfigBufferSizes failed (error " + std::to_string(err) + ")");
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+    err = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+    if (err != ERROR_SUCCESS) {
+        return Result::failure("QueryDisplayConfig failed (error " + std::to_string(err) + ")");
+    }
+    err = SetDisplayConfig(path_count, paths.data(), mode_count, modes.data(),
+                           SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES);
+    if (err != ERROR_SUCCESS) {
+        return Result::failure("SetDisplayConfig(SDC_SAVE_TO_DATABASE) failed (error " + std::to_string(err) + ")");
+    }
+    return Result::success();
+}
+
 } // namespace
 
 std::unique_ptr<DisplayService> DisplayService::create(
@@ -139,14 +162,14 @@ WinDisplayService::WinDisplayService(const DisplayServiceConfig& config)
     : config_(config) {
     revert_manager_ = std::make_unique<RevertManager>(events_);
 
+    // The baseline the watcher compares against exists before it starts.
+    last_snapshot_ = snapshot();
+
     if (config_.enable_events) {
-        watcher_ = std::make_unique<WinDisplayWatcher>([this] {
-            on_system_display_change();
+        watcher_ = std::make_unique<WinDisplayWatcher>([this](bool definite) {
+            on_system_display_change(definite);
         });
     }
-
-    // Initial snapshot
-    last_snapshot_ = snapshot();
 }
 
 WinDisplayService::~WinDisplayService() {
@@ -159,16 +182,22 @@ MessageQueue<DisplayEvent>& WinDisplayService::events() {
     return events_;
 }
 
-void WinDisplayService::on_system_display_change() {
+// WM_DISPLAYCHANGE is always published; the broadcast hints (settings, DPI,
+// device arrival) only when the displays actually differ from what was last
+// published, so a theme or environment change does not look like a display
+// change.
+void WinDisplayService::on_system_display_change(bool definite) {
     auto new_snap = snapshot();
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        if (!definite && new_snap.same_displays(last_snapshot_)) return;
         last_snapshot_ = new_snap;
     }
     events_.push(DisplaysChanged{new_snap});
 }
 
 DisplaysSnapshot WinDisplayService::snapshot() const {
+    DpiScope dpi;
     DisplaysSnapshot snap;
     snap.timestamp = std::chrono::system_clock::now();
 
@@ -185,8 +214,27 @@ DisplaysSnapshot WinDisplayService::snapshot() const {
             &modeCount, modes.data(), nullptr);
 
         if (status == ERROR_SUCCESS) {
+            // Clone mode: several paths (targets) share one source. The first
+            // target owns the desktop area; the others mirror it.
+            struct Source {
+                LUID adapter;
+                UINT32 id;
+                std::string display_id;
+            };
+            std::vector<Source> sources;
             for (size_t i = 0; i < pathCount; ++i) {
-                snap.displays.push_back(build_display_info(paths[i], modes, i));
+                DisplayInfo info = build_display_info(paths[i], modes, i);
+                const auto& src = paths[i].sourceInfo;
+                for (const auto& s : sources) {
+                    if (s.adapter.LowPart == src.adapterId.LowPart &&
+                        s.adapter.HighPart == src.adapterId.HighPart && s.id == src.id) {
+                        info.mirror_of = s.display_id;
+                        info.is_primary = false;
+                        break;
+                    }
+                }
+                if (info.mirror_of.empty()) sources.push_back(Source{src.adapterId, src.id, info.id});
+                snap.displays.push_back(std::move(info));
             }
         }
     }
@@ -200,6 +248,7 @@ DisplaysSnapshot WinDisplayService::snapshot() const {
 
             DisplayInfo info;
             info.id = wide_to_utf8(dd.DeviceName);
+            info.device_name = info.id;
             info.name = wide_to_utf8(dd.DeviceString);
             info.adapter_name = wide_to_utf8(dd.DeviceString);
             info.is_primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
@@ -329,10 +378,7 @@ DisplayInfo WinDisplayService::build_display_info(
     }
 
     if (!gdiDeviceName.empty()) {
-        {
-            std::lock_guard<std::mutex> lock(gdi_mutex_);
-            gdi_name_map_[info.id] = gdiDeviceName;
-        }
+        info.device_name = wide_to_utf8(gdiDeviceName.c_str());
         info.scale = get_monitor_dpi(gdiDeviceName);
         info.available_modes = query_available_modes(gdiDeviceName);
         info.night_light = gamma_.get_status(wide_to_utf8(gdiDeviceName.c_str()));
@@ -345,36 +391,22 @@ DisplayInfo WinDisplayService::build_display_info(
 }
 
 Result WinDisplayService::apply_configuration(const DisplayConfigChange& change) {
+    DpiScope dpi;
     std::wstring gdi_name;
 
-    // Resolve GDI name from display_id
+    // Resolve GDI name from display_id (an empty id means the primary display)
     auto snap = snapshot();
-    const auto* d = snap.find_display(change.display_id);
-    if (!d && !snap.displays.empty()) {
-        d = &snap.displays.front();
-    }
+    const auto* d = change.display_id.empty() ? snap.primary_display() : snap.find_display(change.display_id);
     if (!d) {
         return Result::failure("Display not found: " + change.display_id);
     }
+    gdi_name = utf8_to_wide(d->device_name);
+    if (gdi_name.empty()) {
+        return Result::failure("No GDI device drives display " + d->id);
+    }
 
-    // Query source GDI device name
     DEVMODEW cur_dm{};
     cur_dm.dmSize = sizeof(cur_dm);
-
-    // Try finding matching DISPLAY_DEVICE
-    DISPLAY_DEVICEW dd{};
-    dd.cb = sizeof(dd);
-    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
-        std::string cur_id = wide_to_utf8(dd.DeviceName);
-        if (cur_id == d->id || d->id.find(cur_id) != std::string::npos || snap.displays.size() == 1) {
-            gdi_name = dd.DeviceName;
-            break;
-        }
-    }
-
-    if (gdi_name.empty()) {
-        gdi_name = L"\\\\.\\DISPLAY1";
-    }
 
     if (!EnumDisplaySettingsExW(gdi_name.c_str(), ENUM_CURRENT_SETTINGS, &cur_dm, 0)) {
         return Result::failure("Failed to query current display settings");
@@ -422,17 +454,17 @@ Result WinDisplayService::apply_configuration(const DisplayConfigChange& change)
 Result WinDisplayService::apply_temporary_configuration(
     const DisplayConfigChange& change,
     std::chrono::milliseconds timeout) {
+    DpiScope dpi;
     auto snap = snapshot();
-    const auto* d = snap.find_display(change.display_id);
-    if (!d && !snap.displays.empty()) {
-        d = &snap.displays.front();
-    }
+    const auto* d = change.display_id.empty() ? snap.primary_display() : snap.find_display(change.display_id);
     if (!d) {
         return Result::failure("Display not found: " + change.display_id);
     }
 
-    std::wstring gdi_name = gdi_name_for(d->id);
-    if (gdi_name.empty()) gdi_name = L"\\\\.\\DISPLAY1";
+    std::wstring gdi_name = utf8_to_wide(d->device_name);
+    if (gdi_name.empty()) {
+        return Result::failure("No GDI device drives display " + d->id);
+    }
 
     DEVMODEW orig_dm{};
     orig_dm.dmSize = sizeof(orig_dm);
@@ -476,6 +508,7 @@ Result WinDisplayService::apply_temporary_configuration(
     target_dm.dmFields |= DM_POSITION;
 
     // 1. Try modern CCD SetDisplayConfig
+    std::string ccd_error;
     UINT32 pathCount = 0;
     UINT32 modeCount = 0;
     LONG sdc_err = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
@@ -497,7 +530,7 @@ Result WinDisplayService::apply_temporary_configuration(
                 DisplayConfigGetDeviceInfo(&tn.header);
                 std::string target_path = wide_to_utf8(tn.monitorDevicePath);
 
-                if (target_path == d->id || change.display_id.empty() || new_paths.size() == 1) {
+                if (target_path == d->id || new_paths.size() == 1) {
                     target_found = true;
                     if (path.sourceInfo.modeInfoIdx < new_modes.size()) {
                         auto& sm = new_modes[path.sourceInfo.modeInfoIdx].sourceMode;
@@ -531,6 +564,10 @@ Result WinDisplayService::apply_temporary_configuration(
                     static_cast<UINT32>(new_modes.size()), new_modes.data(),
                     SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
                 if (sdc_err == ERROR_SUCCESS) {
+                    // The test configuration was applied without
+                    // SDC_SAVE_TO_DATABASE, so the database still holds the
+                    // original: a rollback only has to re-apply it, and a
+                    // confirmation saves what is active now.
                     revert_manager_->start_temporary(
                         d->id, timeout,
                         [orig_paths, orig_modes]() {
@@ -545,18 +582,21 @@ Result WinDisplayService::apply_temporary_configuration(
                                                        std::to_string(err) + ")");
                             }
                             return Result::success();
-                        });
+                        },
+                        [] { return persist_active_configuration(); });
                     return Result::success();
-                } else {
-                    std::printf("SetDisplayConfig error: %ld\n", sdc_err);
                 }
+                ccd_error = "SetDisplayConfig error " + std::to_string(sdc_err);
             } else {
-                std::printf("target_found was false for d->id: %s\n", d->id.c_str());
+                ccd_error = "no CCD path drives " + d->id;
             }
         }
     }
 
-    // 2. Fall back to ChangeDisplaySettingsExW
+    // 2. Fall back to ChangeDisplaySettingsExW. The first two forms change the
+    // mode for the session only; a driver that accepts neither gets the mode
+    // through the registry, which the rollback then has to restore too.
+    bool wrote_registry = false;
     LONG apply_res = ChangeDisplaySettingsExW(gdi_name.c_str(), &target_dm, nullptr, CDS_FULLSCREEN, nullptr);
     if (apply_res != DISP_CHANGE_SUCCESSFUL) {
         apply_res = ChangeDisplaySettingsExW(gdi_name.c_str(), &target_dm, nullptr, 0, nullptr);
@@ -564,22 +604,37 @@ Result WinDisplayService::apply_temporary_configuration(
     if (apply_res != DISP_CHANGE_SUCCESSFUL) {
         apply_res = ChangeDisplaySettingsExW(gdi_name.c_str(), &target_dm, nullptr, CDS_UPDATEREGISTRY | CDS_NORESET, nullptr);
         if (apply_res == DISP_CHANGE_SUCCESSFUL) {
+            wrote_registry = true;
             ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
         }
     }
     if (apply_res != DISP_CHANGE_SUCCESSFUL) {
-        return Result::failure("Failed to apply temporary display settings (code " + std::to_string(apply_res) + ")");
+        return Result::failure("Failed to apply temporary display settings (code " + std::to_string(apply_res) + ")" +
+                               (ccd_error.empty() ? "" : "; CCD: " + ccd_error));
     }
 
     // Start revert timer with rollback lambda
     revert_manager_->start_temporary(
         d->id, timeout,
-        [gdi_name, orig_dm]() {
+        [gdi_name, orig_dm, wrote_registry]() {
             DEVMODEW restore_dm = orig_dm;
-            LONG rc = ChangeDisplaySettingsExW(gdi_name.c_str(), &restore_dm, nullptr, 0, nullptr);
+            LONG rc = ChangeDisplaySettingsExW(gdi_name.c_str(), &restore_dm, nullptr,
+                                               wrote_registry ? CDS_UPDATEREGISTRY : 0, nullptr);
             ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
             if (rc != DISP_CHANGE_SUCCESSFUL) {
                 return Result::failure("ChangeDisplaySettingsExW failed to restore the original mode (code " +
+                                       std::to_string(rc) + ")");
+            }
+            return Result::success();
+        },
+        [gdi_name, target_dm]() {
+            // Record the active test mode as the display's registry mode
+            // without switching again.
+            DEVMODEW keep = target_dm;
+            LONG rc = ChangeDisplaySettingsExW(gdi_name.c_str(), &keep, nullptr, CDS_UPDATEREGISTRY | CDS_NORESET,
+                                               nullptr);
+            if (rc != DISP_CHANGE_SUCCESSFUL) {
+                return Result::failure("ChangeDisplaySettingsExW could not save the mode to the registry (code " +
                                        std::to_string(rc) + ")");
             }
             return Result::success();
@@ -600,24 +655,16 @@ bool WinDisplayService::is_revert_pending() const {
     return revert_manager_->is_pending();
 }
 
-std::wstring WinDisplayService::gdi_name_for(const std::string& display_id) const {
-    std::lock_guard<std::mutex> lock(gdi_mutex_);
-    auto it = gdi_name_map_.find(display_id);
-    return it == gdi_name_map_.end() ? std::wstring() : it->second;
-}
-
 Result WinDisplayService::set_night_light(bool enabled, uint32_t temperature_kelvin) {
     // The gamma ramp lives on the GDI device ("\\.\DISPLAYn"), which is also
     // the key snapshot() reads night-light status back under; the display id
     // is the monitor device path, which CreateDC does not accept.
     auto snap = snapshot();
     const auto* primary = snap.primary_display();
-    std::string device_name = "\\\\.\\DISPLAY1";
-    if (primary) {
-        std::wstring gdi = gdi_name_for(primary->id);
-        device_name = gdi.empty() ? primary->id : wide_to_utf8(gdi.c_str());
+    if (!primary || primary->device_name.empty()) {
+        return Result::failure("No display with a GDI device to apply a gamma ramp to");
     }
-    return gamma_.set_night_light(device_name, enabled, temperature_kelvin);
+    return gamma_.set_night_light(primary->device_name, enabled, temperature_kelvin);
 }
 
 } // namespace brodisplays

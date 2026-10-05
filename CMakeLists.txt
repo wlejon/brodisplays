@@ -30,6 +30,7 @@ endfunction()
 file(GLOB BRODISPLAYS_SOURCES CONFIGURE_DEPENDS
     src/common/types.cpp
     src/common/edid.cpp
+    src/common/color_temperature.cpp
     src/common/revert_timer.cpp)
 
 set(BRODISPLAYS_LINK_LIBS "")
@@ -57,8 +58,16 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Threads REQUIRED)
 
     pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
-    pkg_check_modules(XRANDR REQUIRED IMPORTED_TARGET xrandr)
-    pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
+    # X11 is spoken through XCB (not Xlib): every request is bounded by a
+    # watchdog that can abandon a server that stops answering, which Xlib's
+    # fatal I/O error handling does not allow.
+    pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb xcb-randr xau)
+    # GIO (D-Bus + GSettings) drives the desktops' own night lights (KDE
+    # Plasma's KWin, GNOME). Optional: without it night light falls back to
+    # gamma ramps where no desktop service owns them, and is reported
+    # unsupported under KDE and GNOME.
+    pkg_check_modules(GIO IMPORTED_TARGET gio-2.0)
+    option(BRODISPLAYS_WITH_GIO "Control KDE / GNOME night light over D-Bus and GSettings (gio-2.0)" ${GIO_FOUND})
 
     find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
@@ -66,24 +75,28 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     file(MAKE_DIRECTORY ${PROTO_DIR})
     list(APPEND BRODISPLAYS_PRIVATE_INCLUDES ${PROTO_DIR})
 
-    set(WLR_XML ${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-output-management-unstable-v1.xml)
-    set(WLR_HEADER ${PROTO_DIR}/wlr-output-management-unstable-v1-client-protocol.h)
-    set(WLR_CODE ${PROTO_DIR}/wlr-output-management-unstable-v1-protocol.c)
-
-    add_custom_command(
-        OUTPUT ${WLR_HEADER} ${WLR_CODE}
-        COMMAND ${WAYLAND_SCANNER} client-header ${WLR_XML} ${WLR_HEADER}
-        COMMAND ${WAYLAND_SCANNER} private-code ${WLR_XML} ${WLR_CODE}
-        DEPENDS ${WLR_XML}
-        VERBATIM)
+    foreach(_proto wlr-output-management-unstable-v1 wlr-gamma-control-unstable-v1)
+        set(_xml ${CMAKE_CURRENT_SOURCE_DIR}/protocols/${_proto}.xml)
+        set(_header ${PROTO_DIR}/${_proto}-client-protocol.h)
+        set(_code ${PROTO_DIR}/${_proto}-protocol.c)
+        add_custom_command(
+            OUTPUT ${_header} ${_code}
+            COMMAND ${WAYLAND_SCANNER} client-header ${_xml} ${_header}
+            COMMAND ${WAYLAND_SCANNER} private-code ${_xml} ${_code}
+            DEPENDS ${_xml}
+            VERBATIM)
+        list(APPEND BRODISPLAYS_SOURCES ${_header} ${_code})
+    endforeach()
 
     file(GLOB _linux_sources CONFIGURE_DEPENDS src/linux/*.cpp)
-    list(APPEND BRODISPLAYS_SOURCES ${_linux_sources} ${WLR_CODE} ${WLR_HEADER})
+    list(APPEND BRODISPLAYS_SOURCES ${_linux_sources})
     list(APPEND BRODISPLAYS_LINK_LIBS
         PkgConfig::WAYLAND_CLIENT
-        PkgConfig::XRANDR
-        PkgConfig::X11
+        PkgConfig::XCB
         Threads::Threads)
+    if(BRODISPLAYS_WITH_GIO)
+        list(APPEND BRODISPLAYS_LINK_LIBS PkgConfig::GIO)
+    endif()
 else()
     message(FATAL_ERROR "brodisplays supports Windows, macOS and Linux only")
 endif()
@@ -105,6 +118,8 @@ if(WIN32)
     target_compile_definitions(brodisplays PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE _WIN32_WINNT=0x0A00)
 elseif(APPLE)
     target_compile_options(brodisplays PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+elseif(BRODISPLAYS_WITH_GIO)
+    target_compile_definitions(brodisplays PRIVATE BRODISPLAYS_HAVE_GIO=1)
 endif()
 
 if(BRODISPLAYS_BUILD_TESTS)

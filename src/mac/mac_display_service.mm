@@ -7,6 +7,8 @@
 #import <IOKit/graphics/IOGraphicsLib.h>
 
 #include <cmath>
+#include <cstring>
+#include <map>
 #include <vector>
 
 #include "brodisplays/edid.h"
@@ -80,63 +82,66 @@ CGDisplayModeRef copy_matching_mode(CGDirectDisplayID d, const DisplayConfigChan
     return best;
 }
 
-std::string query_display_name_iokit(CGDirectDisplayID display_id, bool is_internal) {
-    io_iterator_t it;
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IODisplayConnect"), &it) != kIOReturnSuccess) {
-        return is_internal ? "Color LCD" : "Display " + std::to_string(display_id);
-    }
-
-    io_service_t service;
-    std::string name;
-    while ((service = IOIteratorNext(it)) != 0) {
-        CFDictionaryRef info = IODisplayCreateInfoDictionary(service, kIODisplayOnlyPreferredName);
-        if (info) {
-            CFDictionaryRef names = (CFDictionaryRef)CFDictionaryGetValue(info, CFSTR(kDisplayProductName));
-            if (names) {
-                CFIndex count = CFDictionaryGetCount(names);
-                if (count > 0) {
-                    const void** values = (const void**)alloca(count * sizeof(void*));
-                    CFDictionaryGetKeysAndValues(names, nullptr, values);
-                    name = cfstring_to_utf8((CFStringRef)values[0]);
-                }
-            }
-            CFRelease(info);
-        }
-        IOObjectRelease(service);
-        if (!name.empty()) break;
-    }
-    IOObjectRelease(it);
-
-    if (name.empty()) {
-        name = is_internal ? "Color LCD" : "Display " + std::to_string(display_id);
-    }
-    return name;
+uint32_t dict_u32(CFDictionaryRef d, CFStringRef key) {
+    auto n = (CFNumberRef)CFDictionaryGetValue(d, key);
+    uint32_t v = 0;
+    if (n && CFGetTypeID(n) == CFNumberGetTypeID()) CFNumberGetValue(n, kCFNumberSInt32Type, &v);
+    return v;
 }
 
-void query_edid_iokit(CGDirectDisplayID /*display_id*/, EdidInfo& out_edid) {
+// The IODisplayConnect service of this display (Intel Macs and some external
+// displays; Apple silicon drives most displays without one): matched by
+// vendor and product number, never "the first one", so several displays do
+// not all get the first display's name and EDID.
+void query_iokit(CGDirectDisplayID display_id, std::string& out_name, EdidInfo& out_edid) {
     io_iterator_t it;
     if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IODisplayConnect"), &it) != kIOReturnSuccess) {
         return;
     }
-
+    const uint32_t vendor = CGDisplayVendorNumber(display_id);
+    const uint32_t product = CGDisplayModelNumber(display_id);
     io_service_t service;
     while ((service = IOIteratorNext(it)) != 0) {
-        CFDictionaryRef info = IODisplayCreateInfoDictionary(service, kIODisplayMatchingInfo);
+        CFDictionaryRef info = IODisplayCreateInfoDictionary(service, kIODisplayOnlyPreferredName);
         if (info) {
-            CFDataRef edidData = (CFDataRef)CFDictionaryGetValue(info, CFSTR(kIODisplayEDIDKey));
-            if (edidData) {
-                const uint8_t* bytes = CFDataGetBytePtr(edidData);
-                CFIndex len = CFDataGetLength(edidData);
-                if (bytes && len >= 128) {
-                    parse_edid(bytes, len, out_edid);
+            if (dict_u32(info, CFSTR(kDisplayVendorID)) == vendor &&
+                dict_u32(info, CFSTR(kDisplayProductID)) == product) {
+                auto names = (CFDictionaryRef)CFDictionaryGetValue(info, CFSTR(kDisplayProductName));
+                if (names && CFDictionaryGetCount(names) > 0) {
+                    CFIndex count = CFDictionaryGetCount(names);
+                    std::vector<const void*> values(static_cast<size_t>(count));
+                    CFDictionaryGetKeysAndValues(names, nullptr, values.data());
+                    out_name = cfstring_to_utf8((CFStringRef)values[0]);
+                }
+                auto edid = (CFDataRef)CFDictionaryGetValue(info, CFSTR(kIODisplayEDIDKey));
+                if (edid && CFDataGetLength(edid) >= 128) {
+                    parse_edid(CFDataGetBytePtr(edid), static_cast<size_t>(CFDataGetLength(edid)), out_edid);
                 }
             }
             CFRelease(info);
         }
         IOObjectRelease(service);
-        if (!out_edid.raw_bytes.empty()) break;
+        if (!out_name.empty() || !out_edid.raw_bytes.empty()) break;
     }
     IOObjectRelease(it);
+}
+
+// NSScreen's localized names ("Built-in Retina Display", "DELL U2720Q"),
+// by CGDirectDisplayID. Names come from the window server at the time the
+// process first asked; they do not depend on a running event loop.
+std::map<CGDirectDisplayID, std::string> screen_names() {
+    std::map<CGDirectDisplayID, std::string> out;
+    @autoreleasepool {
+        for (NSScreen* s in [NSScreen screens]) {
+            NSNumber* number = s.deviceDescription[@"NSScreenNumber"];
+            if (!number) continue;
+            if (@available(macOS 10.15, *)) {
+                const char* p = s.localizedName.UTF8String;
+                if (p && *p) out[number.unsignedIntValue] = p;
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -156,13 +161,14 @@ MacDisplayService::MacDisplayService(const DisplayServiceConfig& config)
     : config_(config) {
     revert_manager_ = std::make_unique<RevertManager>(events_);
 
+    // The baseline the watcher compares against exists before it starts.
+    last_snapshot_ = snapshot();
+
     if (config_.enable_events) {
         watcher_ = std::make_unique<MacDisplayWatcher>([this] {
             on_system_display_change();
         });
     }
-
-    last_snapshot_ = snapshot();
 }
 
 MacDisplayService::~MacDisplayService() {
@@ -175,10 +181,13 @@ MessageQueue<DisplayEvent>& MacDisplayService::events() {
     return events_;
 }
 
+// Called by the reconfiguration callback and by the watcher's poller, either
+// of which may fire for no actual change: publish only real differences.
 void MacDisplayService::on_system_display_change() {
     auto new_snap = snapshot();
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        if (new_snap.same_displays(last_snapshot_)) return;
         last_snapshot_ = new_snap;
     }
     events_.push(DisplaysChanged{new_snap});
@@ -196,19 +205,32 @@ DisplaysSnapshot MacDisplayService::snapshot() const {
     CGGetOnlineDisplayList(count, displays.data(), &count);
 
     CGDirectDisplayID main_display = CGMainDisplayID();
+    const auto names = screen_names();
 
     for (uint32_t i = 0; i < count; ++i) {
         CGDirectDisplayID d = displays[i];
 
         DisplayInfo info;
         info.id = std::to_string(d);
+        info.device_name = info.id;
         info.is_primary = (d == main_display);
         info.is_internal = CGDisplayIsBuiltin(d) != 0;
-        info.name = query_display_name_iokit(d, info.is_internal);
         info.adapter_name = "Apple GPU";
         info.manufacturer = info.is_internal ? "Apple" : "Unknown";
-        info.model = info.name;
         info.is_connected = true;
+        info.is_active = CGDisplayIsActive(d) && !CGDisplayIsAsleep(d);
+        const CGDirectDisplayID mirrored = CGDisplayMirrorsDisplay(d);
+        if (mirrored != kCGNullDirectDisplay) info.mirror_of = std::to_string(mirrored);
+
+        std::string iokit_name;
+        query_iokit(d, iokit_name, info.edid);
+        auto named = names.find(d);
+        if (named != names.end()) info.name = named->second;
+        else if (!info.edid.monitor_name.empty()) info.name = info.edid.monitor_name;
+        else if (!iokit_name.empty()) info.name = iokit_name;
+        else info.name = info.is_internal ? "Built-in Display" : "Display " + info.id;
+        info.model = info.name;
+        if (!info.edid.manufacturer_id.empty()) info.manufacturer = info.edid.manufacturer_id;
 
         CGRect bounds = CGDisplayBounds(d);
         info.geometry.x = static_cast<int32_t>(bounds.origin.x);
@@ -277,12 +299,6 @@ DisplaysSnapshot MacDisplayService::snapshot() const {
                 CFRelease(desc);
             }
             CFRelease(profile);
-        }
-
-        // EDID
-        query_edid_iokit(d, info.edid);
-        if (!info.edid.monitor_name.empty()) {
-            info.name = info.edid.monitor_name;
         }
 
         // Night light
@@ -382,6 +398,28 @@ Result MacDisplayService::apply_temporary_configuration(
             e = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
             if (e != kCGErrorSuccess) {
                 return Result::failure("CGCompleteDisplayConfiguration failed: " + std::to_string(e));
+            }
+            return Result::success();
+        },
+        [d]() {
+            // The test mode was applied for the session only; confirming
+            // configures the now-current mode again with
+            // kCGConfigurePermanently, which WindowServer records in its
+            // display preferences (com.apple.windowserver.displays).
+            CGDisplayModeRef cur = CGDisplayCopyDisplayMode(d);
+            if (!cur) return Result::failure("The display's current mode cannot be read");
+            CGDisplayConfigRef cfg;
+            CGError e = CGBeginDisplayConfiguration(&cfg);
+            if (e != kCGErrorSuccess) {
+                CGDisplayModeRelease(cur);
+                return Result::failure("CGBeginDisplayConfiguration failed: " + std::to_string(e));
+            }
+            CGConfigureDisplayWithDisplayMode(cfg, d, cur, nullptr);
+            e = CGCompleteDisplayConfiguration(cfg, kCGConfigurePermanently);
+            CGDisplayModeRelease(cur);
+            if (e != kCGErrorSuccess) {
+                return Result::failure("CGCompleteDisplayConfiguration(kCGConfigurePermanently) failed: " +
+                                       std::to_string(e));
             }
             return Result::success();
         });
