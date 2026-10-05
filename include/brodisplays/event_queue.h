@@ -65,9 +65,14 @@ struct RevertCountdown {
     std::chrono::milliseconds remaining{0};
 };
 
+// Published once the rollback has run, before the configuration stops being
+// pending. `restored` is false when the platform refused the rollback, in
+// which case `error` says why and the display may still be in the test mode.
 struct ConfigurationReverted {
     std::string display_id;
     std::string reason;
+    bool restored = true;
+    std::string error;
 };
 
 struct ConfigurationConfirmed {

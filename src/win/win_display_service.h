@@ -52,7 +52,11 @@ private:
 
     mutable std::mutex snapshot_mutex_;
     mutable DisplaysSnapshot last_snapshot_;
+    // Display id (monitor device path) -> GDI source name ("\\.\DISPLAYn").
+    // Written by snapshot() on the caller's and the watcher's threads.
+    mutable std::mutex gdi_mutex_;
     mutable std::unordered_map<std::string, std::wstring> gdi_name_map_;
+    std::wstring gdi_name_for(const std::string& display_id) const;
 };
 
 } // namespace brodisplays

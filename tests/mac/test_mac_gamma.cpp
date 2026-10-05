@@ -3,6 +3,7 @@
 
 int main() {
     std::printf("[test_mac_gamma] Starting macOS gamma / night shift test...\n");
+    bstest::require_mutation_opt_in("test_mac_gamma", "the night-shift test tints the main display's transfer table and");
 
     std::string err;
     auto service = brodisplays::DisplayService::create({}, &err);

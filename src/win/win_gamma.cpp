@@ -56,6 +56,32 @@ std::wstring to_wide(const std::string& str) {
     return w;
 }
 
+// A DC for one display's gamma ramp: CreateDC on the GDI device name, or the
+// screen DC as a fallback. The two are released differently.
+struct DisplayDC {
+    HDC hdc = nullptr;
+    bool from_get_dc = false;
+
+    explicit DisplayDC(const std::string& device_name) {
+        std::wstring wname = to_wide(device_name);
+        hdc = CreateDCW(L"DISPLAY", wname.empty() ? nullptr : wname.c_str(), nullptr, nullptr);
+        if (!hdc) {
+            hdc = GetDC(nullptr);
+            from_get_dc = hdc != nullptr;
+        }
+    }
+    ~DisplayDC() {
+        if (!hdc) return;
+        if (from_get_dc) {
+            ReleaseDC(nullptr, hdc);
+        } else {
+            DeleteDC(hdc);
+        }
+    }
+    DisplayDC(const DisplayDC&) = delete;
+    DisplayDC& operator=(const DisplayDC&) = delete;
+};
+
 } // namespace
 
 WinGamma::WinGamma() = default;
@@ -93,11 +119,8 @@ Result WinGamma::set_night_light(
     uint32_t temperature_kelvin) {
     SavedRamp* sr = find_or_create(device_name);
 
-    std::wstring wname = to_wide(device_name);
-    HDC hdc = CreateDCW(L"DISPLAY", wname.empty() ? nullptr : wname.c_str(), nullptr, nullptr);
-    if (!hdc) {
-        hdc = GetDC(nullptr);
-    }
+    DisplayDC dc(device_name);
+    HDC hdc = dc.hdc;
     if (!hdc) {
         return Result::failure("Failed to acquire device context for display gamma");
     }
@@ -119,10 +142,11 @@ Result WinGamma::set_night_light(
 
     if (!enabled) {
         // Restore original ramp
-        SetDeviceGammaRamp(hdc, sr->ramp);
+        if (!SetDeviceGammaRamp(hdc, sr->ramp)) {
+            return Result::failure("SetDeviceGammaRamp failed to restore the original ramp");
+        }
         sr->night_light_enabled = false;
         sr->temperature_kelvin = 6500;
-        DeleteDC(hdc);
         return Result::success();
     }
 
@@ -137,7 +161,6 @@ Result WinGamma::set_night_light(
     }
 
     BOOL ok = SetDeviceGammaRamp(hdc, new_ramp);
-    DeleteDC(hdc);
 
     if (!ok) {
         return Result::failure("SetDeviceGammaRamp failed");
@@ -151,12 +174,9 @@ Result WinGamma::set_night_light(
 void WinGamma::restore_all() {
     for (auto& sr : saved_ramps_) {
         if (sr.has_original && sr.night_light_enabled) {
-            std::wstring wname = to_wide(sr.device_name);
-            HDC hdc = CreateDCW(L"DISPLAY", wname.empty() ? nullptr : wname.c_str(), nullptr, nullptr);
-            if (!hdc) hdc = GetDC(nullptr);
-            if (hdc) {
-                SetDeviceGammaRamp(hdc, sr.ramp);
-                DeleteDC(hdc);
+            DisplayDC dc(sr.device_name);
+            if (dc.hdc) {
+                SetDeviceGammaRamp(dc.hdc, sr.ramp);
             }
             sr.night_light_enabled = false;
         }

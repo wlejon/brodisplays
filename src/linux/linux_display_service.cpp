@@ -19,21 +19,24 @@ LinuxDisplayService::LinuxDisplayService(const DisplayServiceConfig& config)
     : config_(config) {
     revert_manager_ = std::make_unique<RevertManager>(events_);
 
+    // One display-server backend serves a session: enumeration, mode changes
+    // and hotplug events must all speak about the same outputs. Under a
+    // Wayland session XRandR only sees Xwayland's emulated outputs (different
+    // names, and mode sets there never reach the real displays), so X11 is
+    // used only when there is no Wayland compositor to talk to.
     std::string err;
-    if (WaylandBackend::is_available()) {
-        wayland_backend_ = WaylandBackend::create(&err);
-    }
-    if (X11Backend::is_available()) {
+    wayland_backend_ = WaylandBackend::create(&err);
+    if (!wayland_backend_ && X11Backend::is_available()) {
         x11_backend_ = X11Backend::create(&err);
     }
 
     last_snapshot_ = snapshot();
 
     if (config_.enable_events) {
-        if (x11_backend_) {
-            x11_backend_->start_watcher([this] { on_system_display_change(); });
-        } else if (wayland_backend_) {
+        if (wayland_backend_) {
             wayland_backend_->start_watcher([this] { on_system_display_change(); });
+        } else if (x11_backend_) {
+            x11_backend_->start_watcher([this] { on_system_display_change(); });
         }
     }
 }
@@ -86,11 +89,11 @@ DisplaysSnapshot LinuxDisplayService::snapshot() const {
     DisplaysSnapshot snap;
     snap.timestamp = std::chrono::system_clock::now();
 
-    // Prefer Wayland, then X11, then DRM sysfs
+    // The session's display server first, then the kernel's view (DRM sysfs)
+    // when there is none or it has stopped answering.
     if (wayland_backend_) {
         snap.displays = wayland_backend_->snapshot();
-    }
-    if (snap.displays.empty() && x11_backend_) {
+    } else if (x11_backend_) {
         snap.displays = x11_backend_->snapshot();
     }
     if (snap.displays.empty()) {
@@ -104,11 +107,11 @@ DisplaysSnapshot LinuxDisplayService::snapshot() const {
 }
 
 Result LinuxDisplayService::apply_configuration(const DisplayConfigChange& change) {
-    if (x11_backend_) {
-        return x11_backend_->apply_configuration(change);
-    }
     if (wayland_backend_) {
         return wayland_backend_->apply_configuration(change);
+    }
+    if (x11_backend_) {
+        return x11_backend_->apply_configuration(change);
     }
     return Result::failure("No configurable display backend (X11 or Wayland wlr-output-management) available");
 }
@@ -143,7 +146,7 @@ Result LinuxDisplayService::apply_temporary_configuration(
     revert_manager_->start_temporary(
         d->id, timeout,
         [this, orig_cfg]() {
-            apply_configuration(orig_cfg);
+            return apply_configuration(orig_cfg);
         });
 
     return Result::success();

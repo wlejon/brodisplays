@@ -31,6 +31,55 @@ std::string cfstring_to_utf8(CFStringRef cfstr) {
 }
 
 
+// All modes, including the HiDPI ("looks like") variants that the plain
+// CGDisplayCopyAllDisplayModes call hides.
+CFArrayRef copy_all_modes(CGDirectDisplayID d) {
+    const void* keys[] = {kCGDisplayShowDuplicateLowResolutionModes};
+    const void* values[] = {kCFBooleanTrue};
+    CFDictionaryRef opts = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1,
+                                              &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(d, opts);
+    if (opts) CFRelease(opts);
+    return modes;
+}
+
+double backing_scale(CGDisplayModeRef m) {
+    size_t w = CGDisplayModeGetWidth(m);
+    return w > 0 ? static_cast<double>(CGDisplayModeGetPixelWidth(m)) / static_cast<double>(w) : 1.0;
+}
+
+// The mode a DisplayConfigChange asks for (pixel size and refresh), retained;
+// nullptr when none matches. Several modes share a pixel size (a HiDPI mode
+// and a 1x mode of the same panel resolution); prefer the one with the
+// current mode's backing scale so a refresh-rate change does not also change
+// the UI scale.
+CGDisplayModeRef copy_matching_mode(CGDirectDisplayID d, const DisplayConfigChange& change) {
+    CFArrayRef all = copy_all_modes(d);
+    if (!all) return nullptr;
+    CGDisplayModeRef cur = CGDisplayCopyDisplayMode(d);
+    const double cur_scale = cur ? backing_scale(cur) : 1.0;
+    if (cur) CGDisplayModeRelease(cur);
+
+    CGDisplayModeRef best = nullptr;
+    for (CFIndex i = 0, n = CFArrayGetCount(all); i < n; ++i) {
+        auto m = (CGDisplayModeRef)CFArrayGetValueAtIndex(all, i);
+        if (!CGDisplayModeIsUsableForDesktopGUI(m)) continue;
+        const auto w = static_cast<uint32_t>(CGDisplayModeGetPixelWidth(m));
+        const auto h = static_cast<uint32_t>(CGDisplayModeGetPixelHeight(m));
+        const double rr = CGDisplayModeGetRefreshRate(m);
+        if (change.width.has_value() && *change.width != w) continue;
+        if (change.height.has_value() && *change.height != h) continue;
+        if (change.refresh_rate.has_value() && std::abs(*change.refresh_rate - rr) >= 1.0) continue;
+        if (!best || (std::abs(backing_scale(m) - cur_scale) < 0.01 &&
+                      std::abs(backing_scale(best) - cur_scale) >= 0.01)) {
+            best = m;
+        }
+    }
+    if (best) CGDisplayModeRetain(best);
+    CFRelease(all);
+    return best;
+}
+
 std::string query_display_name_iokit(CGDirectDisplayID display_id, bool is_internal) {
     io_iterator_t it;
     if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IODisplayConnect"), &it) != kIOReturnSuccess) {
@@ -197,7 +246,7 @@ DisplaysSnapshot MacDisplayService::snapshot() const {
         }
 
         // Available modes
-        CFArrayRef allModes = CGDisplayCopyAllDisplayModes(d, nullptr);
+        CFArrayRef allModes = copy_all_modes(d);
         if (allModes) {
             CFIndex numModes = CFArrayGetCount(allModes);
             for (CFIndex m = 0; m < numModes; ++m) {
@@ -257,43 +306,20 @@ Result MacDisplayService::apply_configuration(const DisplayConfigChange& change)
         } catch (...) {}
     }
 
-    CFArrayRef allModes = CGDisplayCopyAllDisplayModes(d, nullptr);
-    if (!allModes) {
-        return Result::failure("Failed to copy display modes for display " + std::to_string(d));
-    }
-
-    CGDisplayModeRef targetMode = nullptr;
-    CFIndex numModes = CFArrayGetCount(allModes);
-    for (CFIndex i = 0; i < numModes; ++i) {
-        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
-        uint32_t w = static_cast<uint32_t>(CGDisplayModeGetPixelWidth(m));
-        uint32_t h = static_cast<uint32_t>(CGDisplayModeGetPixelHeight(m));
-        double rr = CGDisplayModeGetRefreshRate(m);
-
-        bool w_ok = !change.width.has_value() || (*change.width == w);
-        bool h_ok = !change.height.has_value() || (*change.height == h);
-        bool rr_ok = !change.refresh_rate.has_value() || (std::abs(*change.refresh_rate - rr) < 1.0);
-
-        if (w_ok && h_ok && rr_ok) {
-            targetMode = m;
-            break;
-        }
-    }
-
+    CGDisplayModeRef targetMode = copy_matching_mode(d, change);
     if (!targetMode) {
-        CFRelease(allModes);
         return Result::failure("Requested display mode not supported by macOS CoreGraphics");
     }
 
     CGDisplayConfigRef config;
     if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
-        CFRelease(allModes);
+        CGDisplayModeRelease(targetMode);
         return Result::failure("CGBeginDisplayConfiguration failed");
     }
 
     CGConfigureDisplayWithDisplayMode(config, d, targetMode, nullptr);
     CGError err = CGCompleteDisplayConfiguration(config, kCGConfigurePermanently);
-    CFRelease(allModes);
+    CGDisplayModeRelease(targetMode);
 
     if (err != kCGErrorSuccess) {
         return Result::failure("CGCompleteDisplayConfiguration failed: " + std::to_string(err));
@@ -317,62 +343,47 @@ Result MacDisplayService::apply_temporary_configuration(
         return Result::failure("Failed to capture original display mode for revert");
     }
 
-    CFArrayRef allModes = CGDisplayCopyAllDisplayModes(d, nullptr);
-    if (!allModes) {
-        CGDisplayModeRelease(origMode);
-        return Result::failure("Failed to copy display modes for display " + std::to_string(d));
-    }
-
-    CGDisplayModeRef targetMode = nullptr;
-    CFIndex numModes = CFArrayGetCount(allModes);
-    for (CFIndex i = 0; i < numModes; ++i) {
-        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
-        uint32_t w = static_cast<uint32_t>(CGDisplayModeGetPixelWidth(m));
-        uint32_t h = static_cast<uint32_t>(CGDisplayModeGetPixelHeight(m));
-        double rr = CGDisplayModeGetRefreshRate(m);
-
-        bool w_ok = !change.width.has_value() || (*change.width == w);
-        bool h_ok = !change.height.has_value() || (*change.height == h);
-        bool rr_ok = !change.refresh_rate.has_value() || (std::abs(*change.refresh_rate - rr) < 1.0);
-
-        if (w_ok && h_ok && rr_ok) {
-            targetMode = m;
-            break;
-        }
-    }
-
+    CGDisplayModeRef targetMode = copy_matching_mode(d, change);
     if (!targetMode) {
         CGDisplayModeRelease(origMode);
-        CFRelease(allModes);
         return Result::failure("Requested display mode not supported by CoreGraphics");
     }
 
     CGDisplayConfigRef config;
     if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
         CGDisplayModeRelease(origMode);
-        CFRelease(allModes);
+        CGDisplayModeRelease(targetMode);
         return Result::failure("CGBeginDisplayConfiguration failed");
     }
 
     CGConfigureDisplayWithDisplayMode(config, d, targetMode, nullptr);
     CGError err = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
-    CFRelease(allModes);
+    CGDisplayModeRelease(targetMode);
 
     if (err != kCGErrorSuccess) {
         CGDisplayModeRelease(origMode);
-        return Result::failure("CGCompleteDisplayConfiguration failed: " + std::to_string(err));
+        // WindowServer refuses mode changes while the display sleeps.
+        return Result::failure("CGCompleteDisplayConfiguration failed: " + std::to_string(err) +
+                               (CGDisplayIsAsleep(d) ? " (the display is asleep)" : ""));
     }
 
-    // Start revert timer with rollback lambda
+    // Start revert timer with rollback lambda. The original mode is owned by a
+    // shared_ptr so it is released whether the window is reverted or confirmed.
+    std::shared_ptr<CGDisplayMode> orig(origMode, [](CGDisplayModeRef m) { CGDisplayModeRelease(m); });
     revert_manager_->start_temporary(
         std::to_string(d), timeout,
-        [d, origMode]() {
+        [d, orig]() {
             CGDisplayConfigRef cfg;
-            if (CGBeginDisplayConfiguration(&cfg) == kCGErrorSuccess) {
-                CGConfigureDisplayWithDisplayMode(cfg, d, origMode, nullptr);
-                CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+            CGError e = CGBeginDisplayConfiguration(&cfg);
+            if (e != kCGErrorSuccess) {
+                return Result::failure("CGBeginDisplayConfiguration failed: " + std::to_string(e));
             }
-            CGDisplayModeRelease(origMode);
+            CGConfigureDisplayWithDisplayMode(cfg, d, orig.get(), nullptr);
+            e = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+            if (e != kCGErrorSuccess) {
+                return Result::failure("CGCompleteDisplayConfiguration failed: " + std::to_string(e));
+            }
+            return Result::success();
         });
 
     return Result::success();

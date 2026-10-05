@@ -162,21 +162,27 @@ auto service = brodisplays::DisplayService::create(config);
 
 // In a worker loop:
 while (running) {
-    auto event = service->events().pop(std::chrono::milliseconds(500));
-    if (event) {
+    if (!service->events().wait_for(std::chrono::milliseconds(500))) continue;
+    for (const auto& event : service->events().drain()) {
         std::visit([](auto&& ev) {
             using T = std::decay_t<decltype(ev)>;
             if constexpr (std::is_same_v<T, brodisplays::DisplaysChanged>) {
                 std::cout << "Displays topology changed!\n";
             } else if constexpr (std::is_same_v<T, brodisplays::RevertCountdown>) {
-                std::cout << "Reverting in " << ev.seconds_remaining << "s...\n";
+                std::cout << "Reverting in " << ev.remaining.count() << " ms...\n";
             } else if constexpr (std::is_same_v<T, brodisplays::ConfigurationReverted>) {
-                std::cout << "Configuration reverted.\n";
+                std::cout << "Configuration reverted"
+                          << (ev.restored ? "" : " FAILED: " + ev.error) << "\n";
             }
-        }, *event);
+        }, event);
     }
 }
 ```
+
+`is_revert_pending()` stays true until a rollback has finished and its
+`ConfigurationReverted` event is on the queue, so once it reads false the
+restored mode is what `snapshot()` reports. `ConfigurationReverted::restored`
+is false (with `error`) when the platform refused the rollback.
 
 ---
 
@@ -196,6 +202,16 @@ ctest --test-dir build -C Release --output-on-failure
 
 Dependencies: `libwayland-client`, `wayland-scanner`, `libx11`, `libxrandr`.
 
+One display-server backend serves a session: Wayland when `WAYLAND_DISPLAY`
+(or `WAYLAND_SOCKET`) is set, else X11 when `DISPLAY` names a server that
+answers, else the kernel's read-only view in `/sys/class/drm`. Mode changes
+need `zwlr_output_management_v1` under Wayland (sway, Hyprland, other
+wlroots compositors; GNOME, KDE and Weston refuse with an error) or a real
+XRandR server under X11 (Xwayland only emulates mode changes, which is
+reported as an error rather than success). Every exchange with a compositor
+is bounded (2 s); a compositor or X server that accepts the connection but
+never answers disables that backend instead of hanging the caller.
+
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C build -j 4
@@ -212,14 +228,24 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-## Verification Matrix
+## Tests that change the display (opt-in)
 
-All unit tests and integration tests pass across target platforms:
+A plain `ctest` never changes anything a user can see. Tests that switch
+display modes or load gamma ramps run only with
+`BRODISPLAYS_TEST_MUTATE=1` and otherwise skip (exit code 77):
 
-| Platform | Compiler | Tests Passed | Status |
-| :--- | :--- | :--- | :--- |
-| **Windows 11** | MSVC 19.44 (VS 2022) | 7 / 7 (6 passed, 1 skipped) | Verified Clean |
-| **Linux (Arch)** | GCC 16.2.1 / Ninja | 6 / 6 (100%) | Verified Clean |
-| **macOS (Darwin ARM64)** | AppleClang 17.0.0 / Ninja | 6 / 6 (100%) | Verified Clean |
+| Test | What it changes |
+| :--- | :--- |
+| `test_win_revert`, `test_mac_revert`, `test_linux_revert` | Switches the primary display to another refresh rate (then another resolution), lets the revert timer / an explicit revert restore it, and checks the restored mode and the `ConfigurationReverted` event |
+| `test_win_gamma`, `test_mac_gamma` | Tints the primary display with a 4500 K night-light ramp, then restores it |
+| `test_linux_query` (opt-in part only) | Re-applies the current mode through the active backend |
 
-*Note: Mutation tests that modify physical display modes gracefully detect non-elevated desktop session restrictions and exit with return code 77 (`bstest::skip`), leaving 0 permanent modifications on host systems.*
+```bash
+BRODISPLAYS_TEST_MUTATE=1 ctest --test-dir build -C Release -R "revert|gamma" --output-on-failure
+```
+
+Run them on a machine whose screen nobody is using, or against a private
+display server (headless sway, an Xorg `dummy` driver server). macOS refuses
+mode changes while the display sleeps (`caffeinate -u` wakes it).
+`test_linux_unresponsive` (always on) checks that servers which accept a
+connection but never answer cannot hang the service.

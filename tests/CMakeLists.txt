@@ -30,6 +30,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_bd_test(test_linux_query linux/test_linux_query.cpp)
     add_bd_test(test_linux_revert linux/test_linux_revert.cpp)
     add_bd_test(test_linux_drm_sysfs linux/test_linux_drm_sysfs.cpp)
+    add_bd_test(test_linux_unresponsive linux/test_linux_unresponsive.cpp)
+    set_tests_properties(test_linux_query test_linux_unresponsive PROPERTIES TIMEOUT 60)
 endif()
 
 # macOS tests

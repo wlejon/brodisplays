@@ -3,6 +3,7 @@
 
 int main() {
     std::printf("[test_win_gamma] Starting Windows gamma / night light test...\n");
+    bstest::require_mutation_opt_in("test_win_gamma", "the night-light test tints the primary display's gamma ramp and");
 
     std::string err;
     auto service = brodisplays::DisplayService::create({}, &err);

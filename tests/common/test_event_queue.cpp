@@ -32,7 +32,7 @@ int main() {
 
     // 4. Push RevertCountdown and ConfigurationReverted events
     queue.push(brodisplays::RevertCountdown{"disp-1", std::chrono::milliseconds(5000)});
-    queue.push(brodisplays::ConfigurationReverted{"disp-1", "Timeout"});
+    queue.push(brodisplays::ConfigurationReverted{"disp-1", "Timeout", true, {}});
     CHECK_EQ(queue.size(), 3u);
     CHECK_EQ(wake_count.load(), 3);
 

@@ -43,6 +43,20 @@ inline int finish(const char* name) {
     std::exit(77);
 }
 
+// Tests that change what the user sees (display modes, gamma ramps) run only
+// when BRODISPLAYS_TEST_MUTATE=1; otherwise they skip with exit code 77.
+inline bool mutation_opted_in() {
+    const char* v = std::getenv("BRODISPLAYS_TEST_MUTATE");
+    return v && std::string(v) == "1";
+}
+
+inline void require_mutation_opt_in(const char* name, const char* what) {
+    if (!mutation_opted_in()) {
+        skip(name, std::string(what) +
+                       " changes the live display; set BRODISPLAYS_TEST_MUTATE=1 to run it");
+    }
+}
+
 inline bool wait_until(
     const std::function<bool()>& pred,
     std::chrono::milliseconds timeout,
