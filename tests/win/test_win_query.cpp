@@ -2,6 +2,7 @@
 #include "brodisplays/display_service.h"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -58,6 +59,19 @@ int main() {
     CHECK(primary->current_mode.height > 0);
     CHECK(primary->current_mode.refresh_rate > 0.0);
     CHECK(primary->scale.factor >= 1.0);
+
+    // The current mode is one of the listed modes: a rate read from one API
+    // and a list from another must agree, or nothing can be switched back to.
+    bool listed = false;
+    for (const auto& m : primary->available_modes) {
+        if (m.width == primary->current_mode.width && m.height == primary->current_mode.height &&
+            std::abs(m.refresh_rate - primary->current_mode.refresh_rate) < 1.0) {
+            listed = true;
+        }
+    }
+    std::printf("%zu available modes; current mode listed: %s\n", primary->available_modes.size(),
+                listed ? "yes" : "no");
+    CHECK(listed);
     CHECK(primary->scale.dpi >= 96);
     CHECK(!primary->available_modes.empty());
 

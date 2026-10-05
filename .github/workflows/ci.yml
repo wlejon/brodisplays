@@ -17,8 +17,9 @@ concurrency:
 # are disposable VMs, so every job that has a display turns them on. Where a
 # runner has nothing to change (no alternate mode, a driver that takes no
 # gamma ramp, a display that refuses the switch) those tests exit 77 and
-# ctest lists them as skipped, never as passed: read the "did not run" list at
-# the end of each Test step for what a job really covered.
+# ctest lists them as skipped, never as passed. Every Test step ends with the
+# "did not run" list and each skipped test's own reason (.github/ci/ctest.sh):
+# that is what a job really covered.
 #
 # Linux runners have no display, so the Linux jobs bring their own: an Xorg
 # server on the dummy video driver (.github/ci/xorg-dummy.conf; real RandR
@@ -87,14 +88,14 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then export DISPLAY=:99; fi
-          ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+          .github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
 
       # The query and revert tests again, with the Wayland backend answering:
       # headless sway speaks wlr-output-management. Its headless output has
       # no fixed mode list, so the revert test reports that as a skip.
       - name: Test (Wayland session, Linux)
         if: runner.os == 'Linux'
-        run: .github/ci/with-headless-sway.sh ctest --test-dir build -R 'test_linux_(query|revert)' --output-on-failure
+        run: .github/ci/with-headless-sway.sh .github/ci/ctest.sh --test-dir build -R 'test_linux_(query|revert)'
 
   # ── Reduced build ─────────────────────────────────────────────────────────
   #
@@ -127,7 +128,7 @@ jobs:
         run: .github/ci/start-xorg-dummy.sh :99
 
       - name: Test
-        run: DISPLAY=:99 ctest --test-dir build --output-on-failure
+        run: DISPLAY=:99 .github/ci/ctest.sh --test-dir build
 
   # ── Desktop sessions ──────────────────────────────────────────────────────
   #
@@ -164,7 +165,7 @@ jobs:
         run: |
           useradd -m ci
           chown -R ci "$GITHUB_WORKSPACE"
-          runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 ctest --test-dir build --output-on-failure
+          runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 .github/ci/ctest.sh --test-dir build
 
   # ── Coverage ──────────────────────────────────────────────────────────────
   #
@@ -201,8 +202,8 @@ jobs:
 
       - name: Test
         run: |
-          DISPLAY=:99 ctest --test-dir build --output-on-failure
-          brodisplays/.github/ci/with-headless-sway.sh ctest --test-dir build -R 'test_linux_(query|revert)' --output-on-failure
+          DISPLAY=:99 brodisplays/.github/ci/ctest.sh --test-dir build
+          brodisplays/.github/ci/with-headless-sway.sh brodisplays/.github/ci/ctest.sh --test-dir build -R 'test_linux_(query|revert)'
 
       # pipefail: piping gcovr into tee otherwise hands the step tee's exit
       # status, so a gcovr crash produces no report and the job still goes green.

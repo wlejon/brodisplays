@@ -404,6 +404,18 @@ DisplayInfo WinDisplayService::build_display_info(
         info.scale = get_monitor_dpi(gdiDeviceName);
         info.available_modes = query_available_modes(gdiDeviceName);
         info.night_light = gamma_.get_status(wide_to_utf8(gdiDeviceName.c_str()));
+        // A CCD vSyncFreq of 0 or 1 Hz is not a rate: it is the "hardware
+        // default" marker (Hyper-V's synthetic display reports 1/1), and it
+        // would match none of the modes listed above. GDI's current settings
+        // carry the rate the display really runs at.
+        if (info.current_mode.refresh_rate < 2.0) {
+            DEVMODEW dm{};
+            dm.dmSize = sizeof(dm);
+            if (EnumDisplaySettingsExW(gdiDeviceName.c_str(), ENUM_CURRENT_SETTINGS, &dm, 0) &&
+                dm.dmDisplayFrequency > 1) {
+                info.current_mode.refresh_rate = static_cast<double>(dm.dmDisplayFrequency);
+            }
+        }
     } else {
         info.scale.factor = 1.0;
         info.scale.dpi = 96;
