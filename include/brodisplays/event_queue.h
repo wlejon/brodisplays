@@ -79,6 +79,18 @@ struct ConfigurationConfirmed {
     std::string display_id;
 };
 
-using DisplayEvent = std::variant<DisplaysChanged, RevertCountdown, ConfigurationReverted, ConfigurationConfirmed>;
+struct BrightnessEvent {
+    std::string device_name;
+    std::string connector_name;
+    uint32_t raw_brightness = 0;
+    uint32_t max_brightness = 0;
+    uint32_t min_brightness = 0;
+    double normalized_brightness = 0.0;
+    std::chrono::system_clock::time_point timestamp = std::chrono::system_clock::now();
+
+    bool operator==(const BrightnessEvent& other) const noexcept = default;
+};
+
+using DisplayEvent = std::variant<DisplaysChanged, RevertCountdown, ConfigurationReverted, ConfigurationConfirmed, BrightnessEvent>;
 
 } // namespace brodisplays

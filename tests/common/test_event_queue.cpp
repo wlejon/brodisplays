@@ -76,5 +76,31 @@ int main() {
     REQUIRE(e3 != nullptr);
     CHECK_EQ(e3->display_id, "disp-1");
 
+    // 8. Test BrightnessEvent in DisplayEvent queue
+    brodisplays::BrightnessEvent b_ev;
+    b_ev.device_name = "intel_backlight";
+    b_ev.connector_name = "eDP-1";
+    b_ev.raw_brightness = 15000;
+    b_ev.max_brightness = 20000;
+    b_ev.min_brightness = 0;
+    b_ev.normalized_brightness = 0.75;
+
+    queue.push(b_ev);
+    auto b_items = queue.drain();
+    REQUIRE(b_items.size() == 1u);
+    auto* e4 = std::get_if<brodisplays::BrightnessEvent>(&b_items[0]);
+    REQUIRE(e4 != nullptr);
+    CHECK_EQ(e4->device_name, "intel_backlight");
+    CHECK_EQ(e4->connector_name, "eDP-1");
+    CHECK_EQ(e4->raw_brightness, 15000u);
+    CHECK(std::abs(e4->normalized_brightness - 0.75) < 1e-6);
+
+    // 9. Dedicated MessageQueue<BrightnessEvent>
+    brodisplays::MessageQueue<brodisplays::BrightnessEvent> dedicated_queue;
+    dedicated_queue.push(b_ev);
+    auto dedicated_items = dedicated_queue.drain();
+    REQUIRE(dedicated_items.size() == 1u);
+    CHECK_EQ(dedicated_items[0].device_name, "intel_backlight");
+
     return bstest::finish("test_event_queue");
 }

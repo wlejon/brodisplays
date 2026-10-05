@@ -17,6 +17,7 @@ endfunction()
 add_bd_test(test_edid common/test_edid.cpp)
 add_bd_test(test_event_queue common/test_event_queue.cpp)
 add_bd_test(test_revert_timer common/test_revert_timer.cpp)
+add_bd_test(test_backlight_curves common/test_backlight_curves.cpp)
 
 # Windows tests
 if(WIN32)
@@ -32,6 +33,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_bd_test(test_linux_query linux/test_linux_query.cpp)
     add_bd_test(test_linux_revert linux/test_linux_revert.cpp)
     add_bd_test(test_linux_drm_sysfs linux/test_linux_drm_sysfs.cpp)
+    add_bd_test(test_linux_backlight linux/test_linux_backlight.cpp)
     add_bd_test(test_linux_unresponsive linux/test_linux_unresponsive.cpp)
     set_tests_properties(test_linux_query test_linux_unresponsive PROPERTIES TIMEOUT 60)
 

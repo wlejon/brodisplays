@@ -45,7 +45,8 @@ file(GLOB BRODISPLAYS_SOURCES CONFIGURE_DEPENDS
     src/common/types.cpp
     src/common/edid.cpp
     src/common/color_temperature.cpp
-    src/common/revert_timer.cpp)
+    src/common/revert_timer.cpp
+    src/common/backlight_types.cpp)
 
 set(BRODISPLAYS_LINK_LIBS "")
 set(BRODISPLAYS_PRIVATE_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -102,7 +103,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         list(APPEND BRODISPLAYS_SOURCES ${_header} ${_code})
     endforeach()
 
-    file(GLOB _linux_sources CONFIGURE_DEPENDS src/linux/*.cpp)
+    file(GLOB _linux_sources CONFIGURE_DEPENDS src/linux/*.cpp src/linux/backlight/*.cpp)
     list(APPEND BRODISPLAYS_SOURCES ${_linux_sources})
     list(APPEND BRODISPLAYS_LINK_LIBS
         PkgConfig::WAYLAND_CLIENT
