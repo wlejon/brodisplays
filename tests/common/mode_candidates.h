@@ -82,6 +82,7 @@ inline int apply_first_accepted(brodisplays::DisplayService& service, const std:
         auto res = service.apply_temporary_configuration(change_to(id, m), timeout);
         if (res.ok) return static_cast<int>(i);
         std::printf("  refused: %s\n", res.error.c_str());
+        if (refusals->find(res.error) != std::string::npos) continue;
         if (!refusals->empty()) *refusals += "; ";
         *refusals += res.error;
     }

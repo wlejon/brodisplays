@@ -138,11 +138,16 @@ jobs:
   # whole KDE and GNOME stacks installed besides; Arch carries current KWin
   # (Plasma 6) and mutter, which is what the library is developed against, so
   # this job runs all four night-light tests there. The servers refuse to run
-  # as root, hence the unprivileged user.
+  # as root, hence the unprivileged user. Arch ships sway and kwin_wayland with
+  # the cap_sys_nice file capability (for realtime scheduling), and exec fails
+  # with EPERM for a file capability outside the container's bounding set,
+  # hence SYS_NICE.
   sessions:
     name: Desktop sessions · archlinux
     runs-on: ubuntu-24.04
-    container: archlinux:latest
+    container:
+      image: archlinux:latest
+      options: --cap-add=SYS_NICE
     env:
       BRODISPLAYS_TEST_MUTATE: "1"
     steps:

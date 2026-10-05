@@ -88,6 +88,10 @@ Process::Process(const std::vector<std::string>& argv, const std::string& log) {
             dup2(out, 2);
         }
         execvp(args[0], args.data());
+        // Into the log, which is where a skip's reason is read from (a binary
+        // with file capabilities the container's bounding set lacks fails
+        // here with EPERM, before it can say anything itself).
+        dprintf(2, "exec %s: %s\n", args[0], strerror(errno));
         _exit(127);
     }
     pid_ = pid;
