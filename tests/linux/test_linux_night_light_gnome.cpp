@@ -35,7 +35,9 @@ int main() {
     const char* name = "test_linux_night_light_gnome";
     bstest::require_mutation_opt_in(name, "This test (on a private headless mutter it starts)");
     std::printf("[%s] night light through GNOME on a private headless mutter\n", name);
+    // /usr/lib on Arch, /usr/libexec on Debian, Ubuntu and Fedora.
     const char* gsd = "/usr/lib/gsd-color";
+    if (!bdtest::have_program(gsd)) gsd = "/usr/libexec/gsd-color";
     if (!bdtest::have_program("mutter") || !bdtest::have_program(gsd) || !bdtest::have_program("busctl") ||
         !bdtest::have_program("gsettings")) {
         bstest::skip(name, "mutter, gsd-color, busctl or gsettings is not installed");

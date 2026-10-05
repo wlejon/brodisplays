@@ -1,0 +1,244 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# brodisplays has no siblings: every job builds this repo alone.
+#
+# The display-changing tests (mode switches, test-then-revert, gamma ramps,
+# confirm-and-persist) skip unless BRODISPLAYS_TEST_MUTATE=1. Hosted runners
+# are disposable VMs, so every job that has a display turns them on. Where a
+# runner has nothing to change (no alternate mode, a driver that takes no
+# gamma ramp, a display that refuses the switch) those tests exit 77 and
+# ctest lists them as skipped, never as passed: read the "did not run" list at
+# the end of each Test step for what a job really covered.
+#
+# Linux runners have no display, so the Linux jobs bring their own: an Xorg
+# server on the dummy video driver (.github/ci/xorg-dummy.conf; real RandR
+# CRTCs, several modes, gamma ramps) as the ambient X display, then a headless
+# sway as the ambient Wayland display for the query and revert tests. The
+# night-light tests start their own private servers whatever the ambient
+# session is; the `sessions` job is where all four of them have a server to
+# start.
+env:
+  LINUX_BUILD_PACKAGES: >-
+    ninja-build pkg-config libwayland-dev libxcb1-dev libxcb-randr0-dev libxau-dev
+  # Servers and tools the tests start or consult: Xorg dummy + Xvfb (X11),
+  # sway (wlroots), xrandr (the X11 oracle), dbus-daemon (private session buses).
+  LINUX_TEST_PACKAGES: >-
+    xserver-xorg-core xserver-xorg-video-dummy xvfb x11-xserver-utils sway dbus
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,          os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Release }
+          - { name: linux-clang,        os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release }
+          - { name: windows-msvc,       os: windows-2022,                          config: Release }
+          # Debug CRT: iterator debugging and the library's own assert()s.
+          - { name: windows-msvc-debug, os: windows-2022,                          config: Debug }
+          - { name: macos-arm64,        os: macos-15,                              config: Release }
+    env:
+      BRODISPLAYS_TEST_MUTATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $LINUX_BUILD_PACKAGES libglib2.0-dev $LINUX_TEST_PACKAGES
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+
+      - name: Start an Xorg dummy display (Linux)
+        if: runner.os == 'Linux'
+        run: .github/ci/start-xorg-dummy.sh :99
+
+      - name: Test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then export DISPLAY=:99; fi
+          ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+      # The query and revert tests again, with the Wayland backend answering:
+      # headless sway speaks wlr-output-management. Its headless output has
+      # no fixed mode list, so the revert test reports that as a skip.
+      - name: Test (Wayland session, Linux)
+        if: runner.os == 'Linux'
+        run: .github/ci/with-headless-sway.sh ctest --test-dir build -R 'test_linux_(query|revert)' --output-on-failure
+
+  # ── Reduced build ─────────────────────────────────────────────────────────
+  #
+  # No gio-2.0 on the machine: BRODISPLAYS_WITH_GIO defaults OFF, the KDE and
+  # GNOME night lights compile out and are reported unsupported. It is the
+  # configuration nobody develops in, so it is the one that rots.
+  no-gio:
+    name: No GIO · ubuntu-24.04
+    runs-on: ubuntu-24.04
+    env:
+      BRODISPLAYS_TEST_MUTATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $LINUX_BUILD_PACKAGES $LINUX_TEST_PACKAGES
+          if pkg-config --exists gio-2.0; then echo "gio-2.0 is installed; this job needs it absent" >&2; exit 1; fi
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          grep -q 'BRODISPLAYS_WITH_GIO:BOOL=OFF' build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Start an Xorg dummy display
+        run: .github/ci/start-xorg-dummy.sh :99
+
+      - name: Test
+        run: DISPLAY=:99 ctest --test-dir build --output-on-failure
+
+  # ── Desktop sessions ──────────────────────────────────────────────────────
+  #
+  # Night light follows the desktop (KWin, GNOME's settings daemon,
+  # wlr-gamma-control, RandR gamma), and each night-light test starts a private
+  # server of its own kind. Ubuntu 24.04 ships Plasma 5 and would need the
+  # whole KDE and GNOME stacks installed besides; Arch carries current KWin
+  # (Plasma 6) and mutter, which is what the library is developed against, so
+  # this job runs all four night-light tests there. The servers refuse to run
+  # as root, hence the unprivileged user.
+  sessions:
+    name: Desktop sessions · archlinux
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    env:
+      BRODISPLAYS_TEST_MUTATE: "1"
+    steps:
+      - name: Install packages
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git cmake ninja pkgconf wayland libxcb libxau glib2 \
+            xorg-server xf86-video-dummy xorg-server-xvfb xorg-xrandr sway dbus systemd \
+            kwin mutter gnome-settings-daemon
+
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Test
+        run: |
+          useradd -m ci
+          chown -R ci "$GITHUB_WORKSPACE"
+          runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 ctest --test-dir build --output-on-failure
+
+  # ── Coverage ──────────────────────────────────────────────────────────────
+  #
+  # Linux backends only, measured with the display-changing tests on against
+  # the Xorg dummy display. Debug (-O0), so this is also the Linux job where
+  # assert()s are live. The Windows and macOS backends are exercised by the
+  # test matrix, not measured.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    env:
+      BRODISPLAYS_TEST_MUTATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brodisplays
+
+      - name: Install packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcovr $LINUX_BUILD_PACKAGES libglib2.0-dev $LINUX_TEST_PACKAGES
+
+      - name: Configure (instrumented)
+        run: |
+          cmake -S brodisplays -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBRODISPLAYS_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Start an Xorg dummy display
+        run: brodisplays/.github/ci/start-xorg-dummy.sh :99
+
+      - name: Test
+        run: |
+          DISPLAY=:99 ctest --test-dir build --output-on-failure
+          brodisplays/.github/ci/with-headless-sway.sh ctest --test-dir build -R 'test_linux_(query|revert)' --output-on-failure
+
+      # pipefail: piping gcovr into tee otherwise hands the step tee's exit
+      # status, so a gcovr crash produces no report and the job still goes green.
+      #
+      # Run from the workspace root, where build/ is, with the filters spelled
+      # brodisplays/...: gcovr only looks for .gcda files under its root.
+      - name: Report
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p coverage-html
+          gcovr --root . \
+            --filter 'brodisplays/src/' --filter 'brodisplays/include/brodisplays/' \
+            --exclude-unreachable-branches \
+            --print-summary \
+            --html-details coverage-html/index.html \
+            | tee coverage-summary.txt
+          test -s coverage-html/index.html
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `src/` + `include/brodisplays/`'
+            echo
+            echo 'Linux backends only (X11 on an Xorg dummy server, Wayland on headless sway, the DRM sysfs view); the Windows and macOS backends are exercised by the test matrix, not measured.'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

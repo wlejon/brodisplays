@@ -239,8 +239,16 @@ EndSection
 } // namespace
 
 Process start_xorg_dummy(const TempDir& dir) {
-    const char* server = "/usr/lib/Xorg";  // the server itself, not the setuid wrapper
-    if (access(server, X_OK) != 0 || access("/usr/lib/xorg/modules/drivers/dummy_drv.so", R_OK) != 0) return {};
+    // The server itself, not the setuid wrapper: /usr/lib/Xorg on Arch,
+    // /usr/lib/xorg/Xorg on Debian and Ubuntu.
+    const char* server = nullptr;
+    for (const char* candidate : {"/usr/lib/Xorg", "/usr/lib/xorg/Xorg"}) {
+        if (access(candidate, X_OK) == 0) {
+            server = candidate;
+            break;
+        }
+    }
+    if (!server || access("/usr/lib/xorg/modules/drivers/dummy_drv.so", R_OK) != 0) return {};
     const std::string conf_dir = dir.path() + "/xorg.conf.d";
     mkdir(conf_dir.c_str(), 0700);
     const std::string conf = dir.path() + "/xorg-dummy.conf";

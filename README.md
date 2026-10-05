@@ -1,8 +1,11 @@
 # brodisplays
 
+[![CI](https://github.com/wlejon/brodisplays/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/brodisplays/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/wlejon/brodisplays/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/brodisplays/actions/workflows/codeql.yml)
+
 A high-performance, standalone C++20 cross-platform library for display enumeration, configuration, EDID parsing, scale/DPI calculation, HDR metadata, color profiles, night light / gamma management, and test-then-revert configuration semantics.
 
-Part of the **bro** ecosystem, designed in the mould of `brosys` and `htmlayout`.
+Part of the **[bro](https://github.com/wlejon/bro)** ecosystem, designed in the mould of [brosys](https://github.com/wlejon/brosys) and [htmlayout](https://github.com/wlejon/htmlayout). [brocompositor](https://github.com/wlejon/brocompositor) takes its display topology from it on Windows and macOS.
 
 ---
 
@@ -213,6 +216,19 @@ Dependencies: `libwayland-client`, `wayland-scanner`, `xcb`, `xcb-randr`,
 `libXau`; optional `gio-2.0` (`-DBRODISPLAYS_WITH_GIO`, on when found) for
 the KDE / GNOME night lights.
 
+```bash
+# Debian / Ubuntu
+sudo apt install cmake ninja-build pkg-config libwayland-dev libxcb1-dev libxcb-randr0-dev \
+    libxau-dev libglib2.0-dev
+# Arch
+sudo pacman -S cmake ninja pkgconf wayland libxcb libxau glib2
+```
+
+The tests start private servers where they need one; each skips when its
+server is missing: `xvfb` and `xserver-xorg-video-dummy` (Arch:
+`xorg-server-xvfb`, `xf86-video-dummy`), `sway`, `kwin`, `mutter` with
+`gnome-settings-daemon`, plus `xrandr` and `dbus-daemon`.
+
 X11 is spoken through XCB rather than Xlib, so no X call can block forever
 or exit the process: the connection is opened with its own bounded connect,
 every request runs under a watchdog, and a server that stops answering
@@ -276,7 +292,10 @@ BRODISPLAYS_TEST_MUTATE=1 ctest --test-dir build -C Release -R "revert|gamma" --
 ```
 
 Run them on a machine whose screen nobody is using, or against a private
-display server (headless sway, an Xorg `dummy` driver server). macOS refuses
+display server (headless sway, an Xorg `dummy` driver server). CI runs them
+on every job: hosted runners are disposable, the Linux jobs bring an Xorg
+dummy server and a headless sway as their displays, and whatever a runner's
+display cannot do shows up as a skip, never a pass. macOS refuses
 mode changes while the display sleeps (`caffeinate -u` wakes it).
 `test_linux_unresponsive` (always on) checks that servers which accept a
 connection but never answer cannot hang the service, and

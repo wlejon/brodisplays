@@ -1,0 +1,72 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# What brodisplays reads is not its own: EDID blobs straight from monitors
+# (and from whatever a display server hands back as the EDID property),
+# compositor protocol events, RandR replies, sysfs files. The EDID parser
+# indexes descriptor blocks by offsets out of those bytes, and the backends
+# size buffers by counts the server reports, so out-of-bounds reads and
+# integer overflow are the realistic bug, exactly what the C++ queries look for.
+#
+# Two analyses, because each backend compiles only on its own OS: Linux
+# (Wayland, XCB, DRM sysfs, the GIO night lights, the common code) and Windows
+# (CCD, GDI gamma, the watcher window). brodisplays has no vendored or sibling
+# code, so the whole build is traced. The wayland-scanner output under
+# build/protocols is generated, not ours; it sits outside the source root and
+# so outside the results.
+jobs:
+  analyze:
+    name: Analyze C++ (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libwayland-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build (traced)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build -DBRODISPLAYS_BUILD_TESTS=OFF
+            cmake --build build --config Debug --parallel 4
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBRODISPLAYS_BUILD_TESTS=OFF
+            cmake --build build --parallel 4
+          fi
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp/os:${{ runner.os }}

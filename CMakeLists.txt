@@ -14,6 +14,18 @@ endif()
 
 option(BRODISPLAYS_BUILD_TESTS "Build the brodisplays tests" ${_brodisplays_top_level})
 
+# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
+# brodisplays has no business having its own build instrumented from in here.
+option(BRODISPLAYS_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
+if(BRODISPLAYS_COVERAGE AND _brodisplays_top_level)
+    if(MSVC)
+        message(FATAL_ERROR "BRODISPLAYS_COVERAGE requires GCC or Clang (gcov instrumentation)")
+    endif()
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+    message(STATUS "brodisplays: coverage instrumentation ON (-O0)")
+endif()
+
 if(MSVC AND _brodisplays_top_level)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
