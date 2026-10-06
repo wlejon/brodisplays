@@ -36,6 +36,9 @@ Part of the **[bro](https://github.com/wlejon/bro)** ecosystem, designed in the 
 - **Color & Night Light**:
   - Color profile retrieval (ICC / ColorSync / Windows Advanced Color).
   - Color temperature adjustment (Kelvin to RGB gamma ramp) for night light / night shift.
+- **Panel Backlight (Linux)**:
+  - `BacklightManager` (`brodisplays/backlight.h`) enumerates `/sys/class/backlight` devices, ties each to its DRM connector (e.g. `eDP-1`), reads and sets brightness raw or normalized (linear or perceptual gamma-2.2 curve), and watches for changes (inotify on `actual_brightness`, delivered as `BrightnessEvent` to a callback or either queue).
+  - Brightness is set through logind's `SetBrightness` (no root needed; requires the GIO build) and falls back to writing sysfs directly. `BacklightManager::create()` returns nullptr on Windows and macOS.
 - **Honest Capability Reporting**:
   - No synthetic or mock values in public APIs. Features unsupported by a platform or compositor return clean error results.
 

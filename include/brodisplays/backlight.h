@@ -67,8 +67,13 @@ public:
     virtual void stop() = 0;
 };
 
+// Panel backlights (laptop and tablet panels), Linux only: devices come from
+// /sys/class/backlight, brightness is set through logind's
+// SetBrightness (falling back to writing sysfs directly) and watched with
+// inotify. A machine without a panel enumerates no devices.
 class BacklightManager {
 public:
+    // nullptr on Windows and macOS, where brodisplays has no backlight backend.
     static std::unique_ptr<BacklightManager> create();
 
     virtual ~BacklightManager() = default;
