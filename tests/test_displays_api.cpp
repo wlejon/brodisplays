@@ -26,6 +26,19 @@ int main() {
     // 1. Install bro.displays into Bronze realm
     brodisplays::api::installDisplays();
 
+    // Night light (the gamma ramp), brightness and display configuration act on
+    // the live display, so they run only with BRODISPLAYS_TEST_MUTATE=1, like
+    // the native mutation tests; otherwise only the getters' shapes are checked.
+    {
+        const char* v = std::getenv("BRODISPLAYS_TEST_MUTATE");
+        const bool mutate = v && std::string(v) == "1";
+        evalScript(mutate ? "globalThis.__brodisplaysMutate = true;" : "globalThis.__brodisplaysMutate = false;");
+        if (!mutate) {
+            std::cout << "Note: setNightLight, setBrightness and applyConfig/testConfig not called; "
+                         "set BRODISPLAYS_TEST_MUTATE=1 to run them" << std::endl;
+        }
+    }
+
     auto g = ev::globalValue("bro");
     CHECK(g.found);
     CHECK(ev::isObject(g.value));
@@ -97,6 +110,7 @@ int main() {
             "  if (typeof initial.enabled !== 'boolean') return 'invalid enabled';\n"
             "  if (typeof initial.temperature !== 'number') return 'invalid temp';\n"
             "  if (typeof initial.schedule !== 'object') return 'invalid schedule';\n"
+            "  if (!globalThis.__brodisplaysMutate) return 'ok';\n"
             "\n"
             "  const setRes = bro.displays.setNightLight({\n"
             "    enabled: true,\n"
@@ -140,8 +154,10 @@ int main() {
             "  const b = bro.displays.getBrightness();\n"
             "  if (typeof b !== 'number') return 'getBrightness not number';\n"
             "\n"
-            "  const setRes = bro.displays.setBrightness(75);\n"
-            "  if (typeof setRes !== 'boolean') return 'setBrightness not boolean';\n"
+            "  if (globalThis.__brodisplaysMutate) {\n"
+            "    const setRes = bro.displays.setBrightness(75);\n"
+            "    if (typeof setRes !== 'boolean') return 'setBrightness not boolean';\n"
+            "  }\n"
             "\n"
             "  const devs = bro.displays.getBacklightDevices();\n"
             "  if (!Array.isArray(devs)) return 'getBacklightDevices not array';\n"
@@ -197,6 +213,7 @@ int main() {
     {
         auto r = evalScript(
             "(function() {\n"
+            "  if (!globalThis.__brodisplaysMutate) return 'ok';\n"
             "  const snap = bro.displays.getSnapshot();\n"
             "  const primary = snap.displays.find(d => d.isPrimary) || snap.displays[0];\n"
             "  const targetId = primary ? primary.id : 'test-display';\n"
@@ -247,7 +264,8 @@ int main() {
             "(function() {\n"
             "  const snap = bro.displays.getSnapshot();\n"
             "  const nl = bro.displays.getNightLight();\n"
-            "  bro.displays.setNightLight({ enabled: false, temperature: 4000 + (Math.random() * 2000 | 0) });\n"
+            "  if (globalThis.__brodisplaysMutate)\n"
+            "    bro.displays.setNightLight({ enabled: false, temperature: 4000 + (Math.random() * 2000 | 0) });\n"
             "  bro.displays.getBrightness();\n"
             "  return snap.displays.length >= 0 ? 'ok' : 'err';\n"
             "})();\n"
