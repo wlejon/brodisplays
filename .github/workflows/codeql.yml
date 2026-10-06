@@ -21,10 +21,15 @@ concurrency:
 #
 # Two analyses, because each backend compiles only on its own OS: Linux
 # (Wayland, XCB, DRM sysfs, the GIO night lights, the common code) and Windows
-# (CCD, GDI gamma, the watcher window). brodisplays has no vendored or sibling
-# code, so the whole build is traced. The wayland-scanner output under
+# (CCD, GDI gamma, the watcher window). The wayland-scanner output under
 # build/protocols is generated, not ours; it sits outside the source root and
 # so outside the results.
+#
+# bronze and brass (for brodisplays_api, on in a top-level build) are laid
+# out beside the checkout by bronze's checkout-toolchain action and built
+# ahead of `init`, so they are never traced: for a compiled language CodeQL
+# extracts only what it watches being compiled, and they are analysed in
+# their own repositories. Everything brodisplays owns is built after `init`.
 jobs:
   analyze:
     name: Analyze C++ (${{ matrix.os }})
@@ -40,6 +45,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
@@ -48,23 +57,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build pkg-config libwayland-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
 
+      - name: Configure and pre-build bronze (outside the traced build)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S brodisplays -B build -DBRODISPLAYS_BUILD_TESTS=OFF
+          else
+            cmake -S brodisplays -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBRODISPLAYS_BUILD_TESTS=OFF
+          fi
+          cmake --build build --config Debug --parallel 4 --target bronze_runtime_shared
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: manual
+          source-root: brodisplays
           queries: security-extended
 
       - name: Build (traced)
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -B build -DBRODISPLAYS_BUILD_TESTS=OFF
-            cmake --build build --config Debug --parallel 4
-          else
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBRODISPLAYS_BUILD_TESTS=OFF
-            cmake --build build --parallel 4
-          fi
+        run: cmake --build build --config Debug --parallel 4
 
       - name: Analyze
         uses: github/codeql-action/analyze@v4

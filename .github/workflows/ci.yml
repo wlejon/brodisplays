@@ -10,7 +10,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# brodisplays has no siblings: every job builds this repo alone.
+# brodisplays has no library siblings, but its JavaScript binding
+# (brodisplays_api, BRODISPLAYS_ENABLE_API, on in a top-level build) links
+# bronze, so every job reconstructs the layout it builds against locally:
+#
+#     $GITHUB_WORKSPACE/
+#       brodisplays/  <- this repo, checked out into a named path, not the root
+#       bronze/       <- the JavaScript runtime brodisplays_api binds
+#       brass/        <- bronze's code generator
+#
+# bronze and brass are laid out by bronze's checkout-toolchain action and
+# compiled inside this build tree with the job's own compiler and CRT; the api
+# is bound across bronze's C++ embed boundary, so a prebuilt bronze would be an
+# unverifiable ABI hazard. Hence `path:` on the checkout and `cmake -S
+# brodisplays`.
 #
 # The display-changing tests (mode switches, test-then-revert, gamma ramps,
 # confirm-and-persist) skip unless BRODISPLAYS_TEST_MUTATE=1. Hosted runners
@@ -54,6 +67,10 @@ jobs:
       BRODISPLAYS_TEST_MUTATE: "1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
@@ -72,9 +89,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -B build
+            cmake -S brodisplays -B build
           else
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+            cmake -S brodisplays -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
           fi
 
       - name: Build
@@ -82,20 +99,20 @@ jobs:
 
       - name: Start an Xorg dummy display (Linux)
         if: runner.os == 'Linux'
-        run: .github/ci/start-xorg-dummy.sh :99
+        run: brodisplays/.github/ci/start-xorg-dummy.sh :99
 
       - name: Test
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then export DISPLAY=:99; fi
-          .github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
+          brodisplays/.github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
 
       # The query and revert tests again, with the Wayland backend answering:
       # headless sway speaks wlr-output-management. Its headless output has
       # no fixed mode list, so the revert test reports that as a skip.
       - name: Test (Wayland session, Linux)
         if: runner.os == 'Linux'
-        run: .github/ci/with-headless-sway.sh .github/ci/ctest.sh --test-dir build -R 'test_linux_(query|revert)'
+        run: brodisplays/.github/ci/with-headless-sway.sh brodisplays/.github/ci/ctest.sh --test-dir build -R 'test_linux_(query|revert)'
 
   # ── Reduced build ─────────────────────────────────────────────────────────
   #
@@ -109,6 +126,10 @@ jobs:
       BRODISPLAYS_TEST_MUTATE: "1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages
         run: |
@@ -118,17 +139,17 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S brodisplays -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           grep -q 'BRODISPLAYS_WITH_GIO:BOOL=OFF' build/CMakeCache.txt
 
       - name: Build
         run: cmake --build build --parallel 4
 
       - name: Start an Xorg dummy display
-        run: .github/ci/start-xorg-dummy.sh :99
+        run: brodisplays/.github/ci/start-xorg-dummy.sh :99
 
       - name: Test
-        run: DISPLAY=:99 .github/ci/ctest.sh --test-dir build
+        run: DISPLAY=:99 brodisplays/.github/ci/ctest.sh --test-dir build
 
   # ── Desktop sessions ──────────────────────────────────────────────────────
   #
@@ -159,9 +180,13 @@ jobs:
             kwin mutter gnome-settings-daemon
 
       - uses: actions/checkout@v7
+        with:
+          path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S brodisplays -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build --parallel 4
@@ -170,7 +195,7 @@ jobs:
         run: |
           useradd -m ci
           chown -R ci "$GITHUB_WORKSPACE"
-          runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 .github/ci/ctest.sh --test-dir build
+          runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 brodisplays/.github/ci/ctest.sh --test-dir build
 
   # ── Coverage ──────────────────────────────────────────────────────────────
   #
@@ -187,6 +212,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages
         run: |

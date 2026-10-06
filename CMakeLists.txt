@@ -138,7 +138,10 @@ elseif(BRODISPLAYS_WITH_GIO)
 endif()
 
 # --- Standalone Bronze JavaScript API ---
-option(BRODISPLAYS_ENABLE_API "Build Bronze JavaScript API" ON)
+# On by default only when brodisplays is the top-level project. A library that
+# consumes brodisplays (brocompositor) then never needs bronze checked out;
+# bro, which does want the binding, sets BRODISPLAYS_ENABLE_API ON itself.
+option(BRODISPLAYS_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BRODISPLAYS_ENABLE_API)
     if(NOT TARGET bronze_runtime_shared)
         set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
