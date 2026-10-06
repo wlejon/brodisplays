@@ -33,6 +33,9 @@ endif()
 # across that boundary; with the static CRT each module has its own heap, and
 # memory freed on the other side is a Debug assert (__acrt_first_block ==
 # header) and silent heap corruption in Release.
+if(MSVC AND _brodisplays_top_level)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 function(brodisplays_warnings target)
     if(MSVC)
