@@ -201,38 +201,20 @@ while (running) {
 
 ### Consuming `brodisplays::brodisplays`
 
-Downstream projects link the `brodisplays::brodisplays` alias target. The library can be consumed either as a sibling checkout or as a Git submodule:
+Downstream projects link the `brodisplays::brodisplays` alias target. Ecosystem consumers pin it
+with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the outer project already added wins,
+else a `../brodisplays` working tree beside the top-level project, else the pinned commit, fetched
+at configure (`-DFETCHCONTENT_SOURCE_DIR_BRODISPLAYS=<path>` points at another tree):
 
 ```cmake
-# Resolving brodisplays: existing target -> sibling checkout -> submodule fallback
-if(NOT TARGET brodisplays::brodisplays)
-    set(BRODISPLAYS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../brodisplays" CACHE PATH "Path to brodisplays")
-    if(EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
-        add_subdirectory("${BRODISPLAYS_DIR}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/brodisplays/CMakeLists.txt")
-        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/brodisplays" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
-    else()
-        message(FATAL_ERROR "brodisplays not found at ${BRODISPLAYS_DIR} or third_party/brodisplays")
-    endif()
-endif()
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(brodisplays GITHUB wlejon/brodisplays REF <40-hex sha>)
 
 target_link_libraries(my_app PRIVATE brodisplays::brodisplays)
 ```
 
-### Sibling vs. Submodule Setup
-
-#### Sibling Layout (Recommended for dev)
-
-```bash
-git clone https://github.com/wlejon/brocompositor
-git clone https://github.com/wlejon/brodisplays   # placed next to consumers
-```
-
-#### Submodule Layout (Self-contained)
-
-```bash
-git clone --recursive https://github.com/wlejon/brodisplays
-```
+brodisplays' own JavaScript binding (`BRODISPLAYS_ENABLE_API`, on in a top-level build) resolves
+bronze (with brass) the same way, so a plain `git clone` builds.
 
 ### Build Commands
 

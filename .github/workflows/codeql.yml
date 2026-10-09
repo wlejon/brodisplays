@@ -25,9 +25,8 @@ concurrency:
 # build/protocols is generated, not ours; it sits outside the source root and
 # so outside the results.
 #
-# bronze and brass (for brodisplays_api, on in a top-level build) are laid
-# out beside the checkout by bronze's checkout-toolchain action and built
-# ahead of `init`, so they are never traced: for a compiled language CodeQL
+# bronze and brass (for brodisplays_api, on in a top-level build) are
+# fetched at configure from the pinned commit and built ahead of `init`, so they are never traced: for a compiled language CodeQL
 # extracts only what it watches being compiled, and they are analysed in
 # their own repositories. Everything brodisplays owns is built after `init`.
 jobs:
@@ -47,8 +46,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: brodisplays
-
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
