@@ -201,14 +201,14 @@ while (running) {
 
 ### Consuming `brodisplays::brodisplays`
 
-Downstream projects link the `brodisplays::brodisplays` alias target. Ecosystem consumers pin it
+Downstream projects link the `brodisplays::brodisplays` alias target. Ecosystem consumers declare it
 with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the outer project already added wins,
-else a `../brodisplays` working tree beside the top-level project, else the pinned commit, fetched
-at configure (`-DFETCHCONTENT_SOURCE_DIR_BRODISPLAYS=<path>` points at another tree):
+else a `../brodisplays` working tree beside the top-level project, else the head of its main
+branch (or the commit the top-level project's `cmake/bro_lock.cmake` names), fetched at configure (`-DFETCHCONTENT_SOURCE_DIR_BRODISPLAYS=<path>` points at another tree):
 
 ```cmake
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(brodisplays GITHUB wlejon/brodisplays REF <40-hex sha>)
+bro_dependency(brodisplays)
 
 target_link_libraries(my_app PRIVATE brodisplays::brodisplays)
 ```

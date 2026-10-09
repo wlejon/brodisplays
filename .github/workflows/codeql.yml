@@ -26,7 +26,7 @@ concurrency:
 # so outside the results.
 #
 # bronze and brass (for brodisplays_api, on in a top-level build) are
-# fetched at configure from the pinned commit and built ahead of `init`, so they are never traced: for a compiled language CodeQL
+# fetched at configure from the heads of their main branches and built ahead of `init`, so they are never traced: for a compiled language CodeQL
 # extracts only what it watches being compiled, and they are analysed in
 # their own repositories. Everything brodisplays owns is built after `init`.
 jobs:

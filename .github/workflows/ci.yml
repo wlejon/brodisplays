@@ -12,7 +12,7 @@ concurrency:
 
 # brodisplays has no library siblings, but its JavaScript binding
 # (brodisplays_api, BRODISPLAYS_ENABLE_API, on in a top-level build) links
-# bronze, which, with brass, comes from the commit CMakeLists.txt pins
+# bronze, which, with brass, comes from the head of its main branch
 # (cmake/bro_deps.cmake), fetched at configure: every job builds a plain
 # clone. bronze and brass compile inside this build tree with the job's own
 # compiler and CRT; the api is bound across bronze's C++ embed boundary, so a
