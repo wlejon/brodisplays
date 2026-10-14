@@ -83,6 +83,39 @@ Result WinGamma::set_night_light(
     const std::string& device_name,
     bool enabled,
     uint32_t temperature_kelvin) {
+    if (device_name.empty()) {
+        std::vector<std::string> names;
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR hMon, HDC, LPRECT, LPARAM lp) -> BOOL {
+                auto* out = reinterpret_cast<std::vector<std::string>*>(lp);
+                MONITORINFOEXW mi{};
+                mi.cbSize = sizeof(mi);
+                if (GetMonitorInfoW(hMon, &mi) && mi.szDevice[0] != 0) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, mi.szDevice, -1, nullptr, 0, nullptr, nullptr);
+                    if (len > 0) {
+                        std::string s(len, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, mi.szDevice, -1, &s[0], len, nullptr, nullptr);
+                        if (!s.empty() && s.back() == 0) s.pop_back();
+                        if (!s.empty()) out->push_back(std::move(s));
+                    }
+                }
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&names));
+
+        if (!names.empty()) {
+            bool any_ok = false;
+            Result last_res = Result::failure("No display accepted gamma ramp");
+            for (const auto& n : names) {
+                Result r = set_night_light(n, enabled, temperature_kelvin);
+                if (r.ok) any_ok = true;
+                else last_res = r;
+            }
+            return any_ok ? Result::success() : last_res;
+        }
+    }
+
     SavedRamp* sr = find_or_create(device_name);
 
     DisplayDC dc(device_name);

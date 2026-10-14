@@ -91,8 +91,10 @@ int main() {
     uint32_t dev_raw = dev.to_raw(dev_norm, brodisplays::BrightnessCurve::Linear);
     CHECK_EQ(dev_raw, 255u);
 
-#if !defined(__linux__)
-    // No backlight backend off Linux: the factory says so instead of
+#if defined(__linux__) || defined(_WIN32)
+    CHECK(brodisplays::BacklightManager::create() != nullptr);
+#else
+    // No backlight backend off Linux/Windows: the factory says so instead of
     // returning a manager with nothing behind it.
     CHECK(brodisplays::BacklightManager::create() == nullptr);
 #endif

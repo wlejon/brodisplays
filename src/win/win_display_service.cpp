@@ -712,15 +712,29 @@ bool WinDisplayService::is_revert_pending() const {
 }
 
 Result WinDisplayService::set_night_light(bool enabled, uint32_t temperature_kelvin) {
-    // The gamma ramp lives on the GDI device ("\\.\DISPLAYn"), which is also
+    // The gamma ramp lives on each active GDI device ("\\.\DISPLAYn"), which is also
     // the key snapshot() reads night-light status back under; the display id
     // is the monitor device path, which CreateDC does not accept.
     auto snap = snapshot();
-    const auto* primary = snap.primary_display();
-    if (!primary || primary->device_name.empty()) {
-        return Result::failure("No display with a GDI device to apply a gamma ramp to");
+    bool any_tried = false;
+    bool any_ok = false;
+    Result last_err = Result::failure("No display with a GDI device to apply a gamma ramp to");
+
+    for (const auto& d : snap.displays) {
+        if (d.device_name.empty()) continue;
+        any_tried = true;
+        Result r = gamma_.set_night_light(d.device_name, enabled, temperature_kelvin);
+        if (r.ok) {
+            any_ok = true;
+        } else {
+            last_err = r;
+        }
     }
-    return gamma_.set_night_light(primary->device_name, enabled, temperature_kelvin);
+
+    if (!any_tried) {
+        return gamma_.set_night_light("", enabled, temperature_kelvin);
+    }
+    return any_ok ? Result::success() : last_err;
 }
 
 } // namespace brodisplays

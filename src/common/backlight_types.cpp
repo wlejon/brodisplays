@@ -95,7 +95,7 @@ uint32_t BacklightDevice::calculate_raw(double normalized, uint32_t min_b, uint3
     return static_cast<uint32_t>(clamped_raw);
 }
 
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(_WIN32)
 std::unique_ptr<BacklightManager> BacklightManager::create() {
     return nullptr;
 }
