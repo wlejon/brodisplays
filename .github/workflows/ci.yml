@@ -157,7 +157,7 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
-      options: --cap-add=SYS_NICE
+      options: --privileged --cap-add=SYS_NICE
     env:
       BRODISPLAYS_TEST_MUTATE: "1"
     steps:
@@ -166,7 +166,7 @@ jobs:
           pacman -Syu --noconfirm --needed \
             base-devel git cmake ninja pkgconf wayland libxcb libxau glib2 \
             xorg-server xf86-video-dummy xorg-server-xvfb xorg-xrandr sway dbus systemd \
-            kwin mutter gnome-settings-daemon
+            kwin mutter gnome-settings-daemon vulkan-swrast
 
       - uses: actions/checkout@v7
         with:
@@ -180,6 +180,8 @@ jobs:
 
       - name: Test
         run: |
+          if [ -e /dev/udmabuf ]; then chmod 0666 /dev/udmabuf; fi
+          if [ -d /dev/dri ]; then chmod -R a+rw /dev/dri || true; fi
           useradd -m ci
           chown -R ci "$GITHUB_WORKSPACE"
           runuser -u ci -- env BRODISPLAYS_TEST_MUTATE=1 brodisplays/.github/ci/ctest.sh --test-dir build
@@ -235,6 +237,8 @@ jobs:
           gcovr --root . \
             --filter 'brodisplays/src/' --filter 'brodisplays/include/brodisplays/' \
             --exclude-unreachable-branches \
+            --gcov-ignore-errors=no_working_dir_found \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
             --print-summary \
             --html-details coverage-html/index.html \
             | tee coverage-summary.txt

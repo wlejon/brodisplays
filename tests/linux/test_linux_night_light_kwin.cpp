@@ -59,10 +59,12 @@ int main() {
         dir, {"kwin_wayland", "--virtual", "--socket", "wl-kwin", "--width", "1280", "--height", "800",
               "--no-lockscreen", "--no-global-shortcuts"},
         "wl-kwin", "kwin.log");
+    bdtest::wait_for([&] { return !kwin.running() || kwin_prop("available") == "b true"; },
+                     std::chrono::milliseconds(10000));
     if (!kwin.running()) {
         bstest::skip(name, "kwin_wayland would not start virtually:\n" + bdtest::log_tail(dir.path() + "/kwin.log"));
     }
-    REQUIRE(bdtest::wait_for([] { return kwin_prop("available") == "b true"; }, std::chrono::milliseconds(10000)));
+    REQUIRE(kwin_prop("available") == "b true");
     std::printf("KWin night light: available=%s running=%s\n", kwin_prop("available").c_str(),
                 kwin_prop("running").c_str());
     CHECK_EQ(kwin_prop("running"), std::string("b false"));
