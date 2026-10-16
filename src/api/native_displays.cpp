@@ -224,7 +224,7 @@ void revertPendingTestIfAny() {
         std::lock_guard lock(g_display_mu);
         testP = std::move(g_pending_test_promise);
     }
-    auto service = activeDisplayService();
+    auto service = existingDisplayService();
     if (service && service->is_revert_pending()) {
         service->revert_configuration();
     }
@@ -259,7 +259,7 @@ void dispatchListenerEvent(const std::string& type, Value eventPayload) {
 }
 
 void drainDisplayEvents() {
-    auto service = activeDisplayService();
+    auto service = existingDisplayService();
     if (!service) return;
 
     auto events = service->events().drain();
@@ -537,6 +537,9 @@ void installDisplaysOnto(Value displaysObj) {
             l.callback = std::make_shared<ev::Persistent>(reader.get(1));
             g_listeners.push_back(std::move(l));
         }
+        // A listener needs the service's events: start it now if nothing
+        // has (the frame tick does not make one).
+        activeDisplayService();
 
         ObjectBuilder handle;
         handle.set("id", static_cast<double>(id));

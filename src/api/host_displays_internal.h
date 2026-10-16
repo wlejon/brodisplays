@@ -14,6 +14,8 @@ using Value = bronze::Value;
 
 // Service accessors
 std::shared_ptr<brodisplays::DisplayService> activeDisplayService();
+// The service if one exists; never makes one (for the frame tick).
+std::shared_ptr<brodisplays::DisplayService> existingDisplayService();
 std::shared_ptr<brodisplays::BacklightManager> activeBacklightManager();
 
 // Error helper

@@ -32,6 +32,11 @@ std::shared_ptr<brodisplays::DisplayService> activeDisplayService() {
     return g_default_display_service;
 }
 
+std::shared_ptr<brodisplays::DisplayService> existingDisplayService() {
+    std::lock_guard lock(g_services_mu);
+    return g_custom_display_service ? g_custom_display_service : g_default_display_service;
+}
+
 void setDisplayService(std::shared_ptr<brodisplays::DisplayService> service) {
     std::lock_guard lock(g_services_mu);
     g_custom_display_service = std::move(service);
