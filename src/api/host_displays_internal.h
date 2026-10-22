@@ -36,5 +36,8 @@ void installBrightnessOnto(Value displaysObj);
 void drainDisplayEvents();
 void clearDisplayListeners();
 void revertPendingTestIfAny();
+bool hasBrightnessListeners();
+void ensureBacklightWatcherStarted();
+void stopBacklightWatcher();
 
 } // namespace brodisplays::api

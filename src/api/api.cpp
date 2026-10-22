@@ -38,8 +38,14 @@ std::shared_ptr<brodisplays::DisplayService> existingDisplayService() {
 }
 
 void setDisplayService(std::shared_ptr<brodisplays::DisplayService> service) {
-    std::lock_guard lock(g_services_mu);
-    g_custom_display_service = std::move(service);
+    stopBacklightWatcher();
+    {
+        std::lock_guard lock(g_services_mu);
+        g_custom_display_service = std::move(service);
+    }
+    if (hasBrightnessListeners() && existingDisplayService()) {
+        ensureBacklightWatcherStarted();
+    }
 }
 
 std::shared_ptr<brodisplays::DisplayService> getDisplayService() {
@@ -59,8 +65,14 @@ std::shared_ptr<brodisplays::BacklightManager> activeBacklightManager() {
 }
 
 void setBacklightManager(std::shared_ptr<brodisplays::BacklightManager> manager) {
-    std::lock_guard lock(g_services_mu);
-    g_custom_backlight_manager = std::move(manager);
+    stopBacklightWatcher();
+    {
+        std::lock_guard lock(g_services_mu);
+        g_custom_backlight_manager = std::move(manager);
+    }
+    if (hasBrightnessListeners() && existingDisplayService()) {
+        ensureBacklightWatcherStarted();
+    }
 }
 
 std::shared_ptr<brodisplays::BacklightManager> getBacklightManager() {
@@ -122,6 +134,7 @@ void tickDisplaysAsync() {
 }
 
 void shutdownDisplaysAsync() {
+    stopBacklightWatcher();
     clearDisplayListeners();
     revertPendingTestIfAny();
 }

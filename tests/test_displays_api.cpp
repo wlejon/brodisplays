@@ -276,7 +276,108 @@ int main() {
     }
     std::cout << "  GC safety loop passed." << std::endl;
 
-    // 8. Test shutdown
+    // 8. Test BacklightWatcher lifecycle on bro.displays.on('brightness'), setDisplayService, and shutdownDisplaysAsync
+    std::cout << "Testing BacklightWatcher lifecycle..." << std::endl;
+    {
+        struct MockWatcher : public brodisplays::BacklightWatcher {
+            brodisplays::MessageQueue<brodisplays::DisplayEvent>* queue = nullptr;
+            bool running = true;
+            int* stopCount = nullptr;
+            MockWatcher(brodisplays::MessageQueue<brodisplays::DisplayEvent>* q, int* sc)
+                : queue(q), stopCount(sc) {}
+            bool is_running() const noexcept override { return running; }
+            void stop() override {
+                if (running) {
+                    running = false;
+                    if (stopCount) (*stopCount)++;
+                }
+            }
+        };
+
+        struct MockBacklightManager : public brodisplays::BacklightManager {
+            brodisplays::MessageQueue<brodisplays::DisplayEvent>* activeQueue = nullptr;
+            int createCount = 0;
+            int stopCount = 0;
+            std::vector<brodisplays::BacklightDevice> enumerate_devices() const override { return {}; }
+            std::optional<brodisplays::BacklightDevice> find_device_by_name(std::string_view) const override { return std::nullopt; }
+            std::optional<brodisplays::BacklightDevice> find_device_for_connector(std::string_view) const override { return std::nullopt; }
+            std::optional<brodisplays::BacklightDevice> primary_device() const override { return std::nullopt; }
+            brodisplays::Result get_brightness(std::string_view, uint32_t& r, double& n, brodisplays::BrightnessCurve) const override {
+                r = 50; n = 0.5; return brodisplays::Result::success();
+            }
+            brodisplays::Result set_brightness(std::string_view, uint32_t) override { return brodisplays::Result::success(); }
+            brodisplays::Result set_normalized_brightness(std::string_view, double, brodisplays::BrightnessCurve) override {
+                return brodisplays::Result::success();
+            }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(std::function<void(const brodisplays::BrightnessEvent&)>) override { return nullptr; }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(std::string_view, std::function<void(const brodisplays::BrightnessEvent&)>) override { return nullptr; }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(brodisplays::MessageQueue<brodisplays::BrightnessEvent>&) override { return nullptr; }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(std::string_view, brodisplays::MessageQueue<brodisplays::BrightnessEvent>&) override { return nullptr; }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(brodisplays::MessageQueue<brodisplays::DisplayEvent>& q) override {
+                createCount++;
+                activeQueue = &q;
+                return std::make_unique<MockWatcher>(&q, &stopCount);
+            }
+            std::unique_ptr<brodisplays::BacklightWatcher> create_watcher(std::string_view, brodisplays::MessageQueue<brodisplays::DisplayEvent>& q) override {
+                createCount++;
+                activeQueue = &q;
+                return std::make_unique<MockWatcher>(&q, &stopCount);
+            }
+        };
+
+        struct MockDisplayService : public brodisplays::DisplayService {
+            brodisplays::MessageQueue<brodisplays::DisplayEvent> evs;
+            brodisplays::DisplaysSnapshot snapshot() const override { return {}; }
+            brodisplays::MessageQueue<brodisplays::DisplayEvent>& events() override { return evs; }
+            brodisplays::Result apply_configuration(const brodisplays::DisplayConfigChange&) override { return brodisplays::Result::success(); }
+            brodisplays::Result apply_temporary_configuration(const brodisplays::DisplayConfigChange&, std::chrono::milliseconds) override { return brodisplays::Result::success(); }
+            brodisplays::Result confirm_configuration() override { return brodisplays::Result::success(); }
+            brodisplays::Result revert_configuration() override { return brodisplays::Result::success(); }
+            bool is_revert_pending() const override { return false; }
+            brodisplays::Result set_night_light(bool, uint32_t) override { return brodisplays::Result::success(); }
+        };
+
+        brodisplays::api::shutdownDisplaysAsync();
+        auto svc1 = std::make_shared<MockDisplayService>();
+        auto mgr = std::make_shared<MockBacklightManager>();
+        brodisplays::api::setDisplayService(svc1);
+        brodisplays::api::setBacklightManager(mgr);
+        CHECK(mgr->createCount == 0);
+
+        // Subscribing to 'brightness' must start the watcher without setBrightness()
+        auto rSub = evalScript(
+            "globalThis.__brightEvents = [];\n"
+            "bro.displays.on('brightness', (e) => { globalThis.__brightEvents.push(e.percent); });\n"
+            "true;\n");
+        CHECK(!rSub.thrown);
+        CHECK(mgr->createCount == 1);
+        CHECK(mgr->activeQueue == &svc1->events());
+
+        // Replacing DisplayService stops the old watcher and rebinds to svc2->events()
+        auto svc2 = std::make_shared<MockDisplayService>();
+        brodisplays::api::setDisplayService(svc2);
+        CHECK(mgr->stopCount == 1);
+        CHECK(mgr->createCount == 2);
+        CHECK(mgr->activeQueue == &svc2->events());
+
+        brodisplays::BrightnessEvent bev{};
+        bev.device_name = "intel_backlight";
+        bev.normalized_brightness = 0.65;
+        mgr->activeQueue->push(bev);
+        brodisplays::api::tickDisplaysAsync();
+
+        auto rCheckEv = evalScript("globalThis.__brightEvents.length === 1 && Math.round(globalThis.__brightEvents[0]) === 65");
+        CHECK(!rCheckEv.thrown && ev::toBool(rCheckEv.value));
+
+        // shutdownDisplaysAsync stops the watcher
+        brodisplays::api::shutdownDisplaysAsync();
+        CHECK(mgr->stopCount == 2);
+        brodisplays::api::setDisplayService(nullptr);
+        brodisplays::api::setBacklightManager(nullptr);
+        std::cout << "  BacklightWatcher lifecycle passed." << std::endl;
+    }
+
+    // 9. Test shutdown
     std::cout << "Testing shutdownDisplaysAsync()..." << std::endl;
     brodisplays::api::shutdownDisplaysAsync();
     std::cout << "  shutdownDisplaysAsync() completed successfully." << std::endl;

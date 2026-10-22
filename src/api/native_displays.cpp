@@ -218,6 +218,16 @@ void clearDisplayListeners() {
     g_listeners.clear();
 }
 
+bool hasBrightnessListeners() {
+    std::lock_guard lock(g_display_mu);
+    for (const auto& l : g_listeners) {
+        if (l.event_type == "brightness" || l.event_type == "brightnessChanged" || l.event_type == "*") {
+            return true;
+        }
+    }
+    return false;
+}
+
 void revertPendingTestIfAny() {
     std::shared_ptr<ev::Persistent> testP;
     {
@@ -540,6 +550,9 @@ void installDisplaysOnto(Value displaysObj) {
         // A listener needs the service's events: start it now if nothing
         // has (the frame tick does not make one).
         activeDisplayService();
+        if (event == "brightness" || event == "brightnessChanged" || event == "*") {
+            ensureBacklightWatcherStarted();
+        }
 
         ObjectBuilder handle;
         handle.set("id", static_cast<double>(id));

@@ -14,21 +14,6 @@ namespace {
 std::mutex g_backlight_mu;
 std::unique_ptr<brodisplays::BacklightWatcher> g_backlight_watcher;
 
-void ensureBacklightWatcherStarted() {
-    std::lock_guard lock(g_backlight_mu);
-    if (g_backlight_watcher) return;
-
-    auto mgr = activeBacklightManager();
-    auto service = activeDisplayService();
-    if (mgr && service) {
-        try {
-            g_backlight_watcher = mgr->create_watcher(service->events());
-        } catch (...) {
-            // Watcher creation not supported on platforms without inotify / backlight
-        }
-    }
-}
-
 Value backlightDeviceToJs(const BacklightDevice& dev) {
     ObjectBuilder b;
     b.set("name", dev.name);
@@ -52,6 +37,29 @@ Value backlightDeviceToJs(const BacklightDevice& dev) {
 
 } // namespace
 
+void ensureBacklightWatcherStarted() {
+    std::lock_guard lock(g_backlight_mu);
+    if (g_backlight_watcher) return;
+
+    auto mgr = activeBacklightManager();
+    auto service = activeDisplayService();
+    if (mgr && service) {
+        try {
+            g_backlight_watcher = mgr->create_watcher(service->events());
+        } catch (...) {
+            // Watcher creation not supported on platforms without inotify / backlight
+        }
+    }
+}
+
+void stopBacklightWatcher() {
+    std::lock_guard lock(g_backlight_mu);
+    if (g_backlight_watcher) {
+        g_backlight_watcher->stop();
+        g_backlight_watcher.reset();
+    }
+}
+
 void installBrightnessOnto(Value displaysObj) {
     ObjectBuilder displays(displaysObj);
 
@@ -65,6 +73,8 @@ void installBrightnessOnto(Value displaysObj) {
 
         auto mgr = activeBacklightManager();
         if (!mgr) return ev::fromDouble(-1.0);
+
+        ensureBacklightWatcherStarted();
 
         uint32_t raw = 0;
         double normalized = 0.0;
@@ -113,6 +123,8 @@ void installBrightnessOnto(Value displaysObj) {
     displays.def("getBacklightDevices", 0, [](Value, std::span<const Value>) -> Value {
         auto mgr = activeBacklightManager();
         if (!mgr) return ev::makeArray(0);
+
+        ensureBacklightWatcherStarted();
 
         auto devices = mgr->enumerate_devices();
         ev::Persistent arr(ev::makeArray(static_cast<uint32_t>(devices.size())));
