@@ -1,6 +1,5 @@
 add_library(brodisplays_api STATIC
     api.cpp
-    host_class.cpp
     native_displays.cpp
     native_nightlight.cpp
     native_brightness.cpp
